@@ -1,0 +1,13 @@
+venv/
+env/
+
+__pycache__/
+*.pyc
+
+data/input_images/*
+data/generated_textures/*
+data/output_gcode/*
+
+!data/input_images/.gitkeep
+!data/generated_textures/.gitkeep
+!data/output_gcode/.gitkeep
