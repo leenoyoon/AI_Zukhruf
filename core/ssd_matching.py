@@ -2,7 +2,7 @@ import numpy as np
 from numba import njit
 
 @njit
-def calculate_ssd_manual(overlap_existing, overlap_candidate):
+def calculate_ssd(overlap_existing, overlap_candidate):
     rows, cols = overlap_existing.shape
     error = 0.0
     for i in range(rows):
@@ -21,11 +21,11 @@ def find_best_matching_patch(patch_bank, overlap_top, overlap_left, overlap_widt
         err = 0.0
         if mode == 1 or mode == 3:
             candidate_left = patch[:, :overlap_width]
-            err += calculate_ssd_manual(overlap_left, candidate_left)  
+            err += calculate_ssd(overlap_left, candidate_left)  
         
         if mode == 2 or mode == 3:
             candidate_top = patch[:overlap_width, :]
-            err += calculate_ssd_manual(overlap_top, candidate_top)
+            err += calculate_ssd(overlap_top, candidate_top)
             
         errors[i] = err
         
@@ -68,6 +68,8 @@ def generate_texture_canvas(patch_bank, seed_patch, canvas_rows, canvas_cols, pa
             
             best_indices = np.where(errors <= threshold)[0] 
             chosen_idx = np.random.choice(best_indices)
+            
+            # chosen_idx = np.argmin(errors)
             
             canvas[y:y+patch_size, x:x+patch_size] = patch_bank[chosen_idx]
         
