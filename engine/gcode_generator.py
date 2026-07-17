@@ -4,6 +4,8 @@ from shapely.geometry import Polygon, JOIN_STYLE
 import os
 import math
 
+offset_paths = []
+
 def point_line_distance(pt, start, end):
     if np.all(start == end):
         return np.linalg.norm(pt - start)
