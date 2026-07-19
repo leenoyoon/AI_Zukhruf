@@ -296,8 +296,15 @@ def build_path_representations(
     return represented_paths
 
 
-paths_info = build_path_representations(
+from engine.dphull_integration import simplify_offset_paths
+
+simplified_offset_paths = simplify_offset_paths(
     offset.offset_paths,
+    epsilon_mm=0.15,
+)
+
+paths_info = build_path_representations(
+    simplified_offset_paths,
     depth=-2.0,
     clearance_height=5.0
 )
