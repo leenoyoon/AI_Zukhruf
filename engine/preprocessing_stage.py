@@ -1,9 +1,12 @@
 from typing import List, Tuple, Literal, Optional
 import numpy as np
 
-from image_preprocessing import preprocess_pipeline, PreprocessResult
-from contour_extraction import contour_extraction_pipeline, Contour, ExtractionReport
-
+from engine.image_preprocessing import preprocess_pipeline, PreprocessResult
+from engine.contour_extraction import (
+    contour_extraction_pipeline,
+    Contour,
+    ExtractionReport,
+)
 
 def run_stage1(
     image_bgr: np.ndarray,
