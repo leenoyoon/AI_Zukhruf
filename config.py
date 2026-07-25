@@ -5,6 +5,9 @@ class Config:
     INPUT_DIR = os.path.join(BASE_DIR, "data", "input_images")
     OUTPUT_DIR = os.path.join(BASE_DIR, "data", "output_gcode")
     TEXTURE_DIR = os.path.join(BASE_DIR, "data", "generated_textures")
+    
+    # Mapped directory for 3D HTML simulations
+    SIMULATION_DIR = os.path.join(BASE_DIR, "data", "output_simulations")
 
     IMAGE_SIZE = (512, 512)
     DEFAULT_PATCH_SIZE = 64

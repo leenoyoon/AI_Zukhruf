@@ -44,6 +44,43 @@ class OffsetReport:
     notes: List[str] = field(default_factory=list)
 
 
+def suggest_tool_for_full_coverage(
+    binary,
+    pixel_to_mm: float,
+    current_tool_mm: float,
+    coverage_threshold_percent: float = 99.0,
+    standard_sizes_mm: Sequence[float] = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0),
+    **generate_kwargs,
+) -> "tuple[float, OffsetReport] | None":
+    """
+    اقتراح إضافي (مو تعديل على الخوارزمية الأساسية) لأصغر أداة قياسية من
+    القائمة بتحقق تغطية >= العتبة.
+
+    ملاحظة مهمة: ما بنعتمد على report.minimum_detected_width_mm لأنو
+    هاي القيمة بتنحسب كـ"أصغر قيمة Distance Transform بكل الصورة" --
+    وهاي دايماً صغيرة جداً عند أي زاوية حادة لأي شكل (مش بس المناطق
+    الرفيعة فعلياً)، حتى لو الصورة كلها أشكال سميكة بلا أي خط رفيع.
+    (تم التحقق من هيك بالاختبار: صورة فيها شكل سميك 10mm بس رجعت
+    minimum_detected_width_mm=0.2mm -- قيمة مضللة تماماً).
+
+    البديل الموثوق: نجرب فعلياً كل قطر قياسي أصغر من الحالي (تنازلياً)
+    ونستخدم coverage_ratio_percent الحقيقي (محسوب عبر dilation فعلي
+    للمسارات ومقارنته بالقناع الأصلي -- مش عرضة لنفس مشكلة الزوايا)،
+    ونرجع أول قطر بيحقق العتبة. هيك ما فينا نثق بمقياس واحد مكسور، بس
+    منستهلك استدعاءات فعلية إضافية -- مقبول لأنها بس بتصير بحالة النقص.
+    """
+    candidates = sorted(
+        (s for s in standard_sizes_mm if s < current_tool_mm), reverse=True
+    )
+    for size in candidates:
+        _, trial_report = generate_groove_offset_paths(
+            binary, pixel_to_mm, size, **generate_kwargs
+        )
+        if trial_report.coverage_ratio_percent >= coverage_threshold_percent:
+            return size, trial_report
+    return None
+
+
 def _validate_inputs(
     binary: np.ndarray,
     pixel_to_mm: float,
