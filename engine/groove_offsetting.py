@@ -126,7 +126,7 @@ def _contours_from_level_mask(
     contours, _ = cv2.findContours(
         level_mask,
         cv2.RETR_LIST,
-        cv2.CHAIN_APPROX_NONE,
+       cv2.CHAIN_APPROX_SIMPLE,
     )
 
     paths: List[Path] = []
