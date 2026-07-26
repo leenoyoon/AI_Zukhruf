@@ -11,8 +11,7 @@ from engine.tool_coverage_advisor import (
     generate_with_coverage_advice,
     regenerate_with_suggested_tool,
 )
-from engine.dphull_integration import simplify_offset_paths
-from engine.gcode_generator import optimize_paths
+from engine.pathOptimizstion import optimize_paths_advanced
 
 # -- مأخوذتين من الملف الأول (فرح): توليد G-code المتحقّق من مدخلات
 #    المستخدم + معاينة المحاكاة HTML، بدل write_gcode البسيطة --
@@ -90,9 +89,12 @@ def process_image_to_gcode(
         print("[offset/error] No machinable paths were generated. Use a smaller tool.")
         return
 
-    # -------- Simplify + Optimize -- ما تغيّر ولا سطر هون --------
-    simplified = simplify_offset_paths(offset_paths, epsilon_mm=0.15)
-    ordered = optimize_paths(simplified)
+    # -------- Simplify + Optimize (advanced: DP + GA + 2-Opt++) --------
+    # NOTE: optimize_paths_advanced() simplifies internally (epsilon_mm=0.15),
+    # exactly like the original pathOptimizstion.py script did -- pass it the
+    # RAW offset_paths here, not an already-simplified list, or it gets
+    # simplified twice.
+    _final_route, ordered = optimize_paths_advanced(offset_paths)
 
     # -------- G-code + Simulation (فرح) -- هون التبديل --------
     user_settings = {
@@ -125,7 +127,7 @@ def process_image_to_gcode(
 
 
 if __name__ == "__main__":
-    input_image = os.path.join(Config.INPUT_DIR, "pattern1.jpg")
+    input_image = os.path.join(Config.INPUT_DIR, "pattern2.jpg")
     output_gcode = os.path.join(Config.OUTPUT_DIR, "final_zukhruf25.gcode")
 
     process_image_to_gcode(

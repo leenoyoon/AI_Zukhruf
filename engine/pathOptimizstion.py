@@ -1,5 +1,64 @@
+"""
+pathOptimizstion.py (refactored to be importable, logic untouched)
+--------------------------------------------------------------------------
+WHAT CHANGED vs the original file, and what did NOT:
+
+  NOT changed (byte-for-byte the same algorithm):
+    - every geometry helper (distance, is_closed_path, path_length,
+      angle_between, detect_sharp_corners, detect_straight_segments,
+      detect_curved_segments)
+    - arc fitting (circle_from_3_points, point_circle_error,
+      arc_direction, fit_arc_to_curved_segment, build_path_representations)
+    - cost model (vector, compute_direction_penalty, compute_jerk_penalty,
+      compute_corner_penalty, compute_transition_cost)
+    - cost matrix / cheapest insertion (build_cost_matrix, get_cost,
+      route_cost, cheapest_insertion)
+    - per-path option generation (generate_path_options,
+      build_all_path_options)
+    - the DP evaluator (RouteDPEvaluator, unchanged)
+    - the Genetic Algorithm (perturb_route, create_initial_population,
+      tournament_selection, order_crossover, mutate_route, get_elites,
+      genetic_algorithm) -- same population_size=120, generations=250,
+      mutation_rate=0.30, elite_ratio=0.05, tournament_size=4,
+      random.seed(42)
+    - 2-Opt++ (two_opt_swap, two_opt_plus_plus_dp) -- same
+      candidate_limit=20, max_iterations=30
+    - arc/segment refresh + evaluation metrics (refresh_selected_path_geometry,
+      attach_arc_data_to_paths, total_air_distance_from_options,
+      total_air_time_seconds, count_long_jumps_from_options,
+      percentage_reduction)
+    - the default `config` dict (same weights, same rapid_feed=5000)
+
+  Changed (structure only, not math):
+    - Everything that used to run automatically at import time (reading
+      `offset.offset_paths`, building paths_info, the cost matrix, running
+      the GA, running 2-Opt++, printing the report, calling plt.show())
+      is now inside `optimize_paths_advanced(offset_paths, ...)`. It runs
+      only when you call that function, and it RETURNS the result instead
+      of leaving it in module-level globals.
+    - `plt.show()` is now gated behind `make_plot=False` by default, so
+      importing/calling this from main.py doesn't pop up a blocking window.
+      Pass `make_plot=True` to get the exact same convergence plot as before.
+    - Console printing is gated behind `verbose=True` (default on, same
+      messages as before) so it's silent-able for automated pipelines.
+    - The function takes `offset_paths` as a normal argument instead of
+      reading a module-level global `offset.offset_paths` at import time.
+      Internally it still calls `simplify_offset_paths(...)` on that input
+      first, exactly like the original script did -- so pass it the RAW
+      offset paths (before simplification), not an already-simplified list,
+      or you'd be simplifying twice.
+
+  Return value:
+    `final_route, optimized_paths = optimize_paths_advanced(offset_paths)`
+    `optimized_paths` is a list of dicts (path_id, points, arc_segments,
+    sharp_corners, straight_segments, curved_segments, start, end, ...) --
+    the exact same shape the original script produced, and the exact shape
+    `generate_Gcode.py`'s `generate_gcode()` already expects
+    (`path.get("points", [])`, `path.get("arc_segments", [])`).
+--------------------------------------------------------------------------
+"""
+
 from math import hypot, acos, degrees, sqrt
-from engine import pathOffset as offset
 import random
 import numpy as np
 import matplotlib.pyplot as plt
@@ -152,9 +211,9 @@ def circle_from_3_points(p1, p2, p3):
     x2, y2 = p2
     x3, y3 = p3
 
-    temp = x2**2 + y2**2
-    bc = (x1**2 + y1**2 - temp) / 2
-    cd = (temp - x3**2 - y3**2) / 2
+    temp = x2 ** 2 + y2 ** 2
+    bc = (x1 ** 2 + y1 ** 2 - temp) / 2
+    cd = (temp - x3 ** 2 - y3 ** 2) / 2
 
     det = (
         (x1 - x2) * (y2 - y3)
@@ -167,7 +226,7 @@ def circle_from_3_points(p1, p2, p3):
     cx = (bc * (y2 - y3) - cd * (y1 - y2)) / det
     cy = ((x1 - x2) * cd - (x2 - x3) * bc) / det
 
-    radius = sqrt((cx - x1)**2 + (cy - y1)**2)
+    radius = sqrt((cx - x1) ** 2 + (cy - y1) ** 2)
 
     return cx, cy, radius
 
@@ -176,7 +235,7 @@ def point_circle_error(point, circle):
     cx, cy, radius = circle
     x, y = point
 
-    current_radius = sqrt((x - cx)**2 + (y - cy)**2)
+    current_radius = sqrt((x - cx) ** 2 + (y - cy) ** 2)
 
     return abs(current_radius - radius)
 
@@ -296,22 +355,6 @@ def build_path_representations(
     return represented_paths
 
 
-from engine.dphull_integration import simplify_offset_paths
-
-simplified_offset_paths = simplify_offset_paths(
-    offset.offset_paths,
-    epsilon_mm=0.15,
-)
-
-paths_info = build_path_representations(
-    simplified_offset_paths,
-    depth=-2.0,
-    clearance_height=5.0
-)
-
-print(f"Number of paths: {len(paths_info)}")
-
-
 # ============================================================
 # 3. CNC-aware transition cost
 # ============================================================
@@ -419,7 +462,8 @@ def compute_transition_cost(node_a, node_b, config):
     }
 
 
-config = {
+# Same default config dict as the original script -- untouched values.
+DEFAULT_CONFIG = {
     "rapid_feed": 5000,
     "clearance_height": 5.0,
     "w_distance": 1.0,
@@ -455,12 +499,6 @@ def build_cost_matrix(nodes, config):
             )
 
     return matrix
-
-
-cost_matrix = build_cost_matrix(
-    paths_info,
-    config
-)
 
 
 def get_cost(cost_matrix, i, j):
@@ -577,17 +615,9 @@ def cheapest_insertion(cost_matrix):
     return route
 
 
-initial_route = cheapest_insertion(cost_matrix)
-
-print(
-    "Initial fixed-matrix cost:",
-    route_cost(initial_route, cost_matrix)
-)
-
-
 # ============================================================
 # 6. Generate machining options for every path
-#    NEW: order is evaluated together with direction and entry point
+#    (direction + entry point, evaluated together with order)
 # ============================================================
 
 def generate_path_options(
@@ -736,16 +766,9 @@ def build_all_path_options(
     }
 
 
-all_path_options = build_all_path_options(
-    paths_info,
-    sample_step=10,
-    max_entry_candidates=4
-)
-
-
 # ============================================================
 # 7. Dynamic Programming evaluator
-#    NEW: for each proposed order, choose the best options jointly
+#    (for each proposed order, choose the best options jointly)
 # ============================================================
 
 class RouteDPEvaluator:
@@ -939,27 +962,9 @@ class RouteDPEvaluator:
         )
 
 
-dp_evaluator = RouteDPEvaluator(
-    all_path_options,
-    config
-)
-
-initial_dp_cost = dp_evaluator.cost(
-    initial_route
-)
-
-print(
-    "Initial DP-aware cost:",
-    initial_dp_cost
-)
-
-
 # ============================================================
 # 8. Genetic Algorithm helpers
 # ============================================================
-
-random.seed(42)
-
 
 def perturb_route(route, strength=3):
     candidate = route[:]
@@ -1161,7 +1166,8 @@ def genetic_algorithm(
     generations=250,
     mutation_rate=0.30,
     elite_ratio=0.05,
-    tournament_size=4
+    tournament_size=4,
+    verbose=True
 ):
     population = create_initial_population(
         initial_route,
@@ -1262,7 +1268,7 @@ def genetic_algorithm(
 
         population = new_population
 
-        if (
+        if verbose and (
             generation == 0
             or (generation + 1) % 25 == 0
         ):
@@ -1273,21 +1279,6 @@ def genetic_algorithm(
             )
 
     return best_route, best_cost, history
-
-
-best_route_ga, best_cost_ga, ga_history = (
-    genetic_algorithm(
-        initial_route=initial_route,
-        dp_evaluator=dp_evaluator,
-        population_size=120,
-        generations=250,
-        mutation_rate=0.30,
-        elite_ratio=0.05,
-        tournament_size=4
-    )
-)
-
-print("Best GA DP-aware cost:", best_cost_ga)
 
 
 # ============================================================
@@ -1361,26 +1352,9 @@ def two_opt_plus_plus_dp(
     return best_route, best_cost
 
 
-final_route, final_cost = (
-    two_opt_plus_plus_dp(
-        best_route_ga,
-        dp_evaluator,
-        candidate_limit=20,
-        max_iterations=30
-    )
-)
-
-print("Final DP-aware cost:", final_cost)
-
-
 # ============================================================
 # 11. Recover the final direction and entry/exit selections
 # ============================================================
-
-final_cost, optimized_paths = (
-    dp_evaluator.solve(final_route)
-)
-
 
 def refresh_selected_path_geometry(
     optimized_paths
@@ -1425,18 +1399,6 @@ def attach_arc_data_to_paths(
         path["arc_segments"] = arcs
 
     return optimized_paths
-
-
-optimized_paths = (
-    refresh_selected_path_geometry(
-        optimized_paths
-    )
-)
-
-optimized_paths = attach_arc_data_to_paths(
-    optimized_paths,
-    max_arc_error=0.15
-)
 
 
 # ============================================================
@@ -1501,132 +1463,305 @@ def percentage_reduction(
     ) * 100.0
 
 
-initial_dp_cost, initial_options = (
-    dp_evaluator.solve(initial_route)
-)
+# ============================================================
+# Entry point: everything the original script did at import
+# time, unchanged, now inside one callable function.
+# ============================================================
 
-ga_dp_cost, ga_options = (
-    dp_evaluator.solve(best_route_ga)
-)
+def optimize_paths_advanced(
+    offset_paths,
+    config=None,
+    ga_params=None,
+    max_arc_error=0.15,
+    long_jump_threshold=20.0,
+    make_plot=False,
+    verbose=True,
+):
+    """
+    Drop-in advanced replacement for gcode_generator.optimize_paths().
 
-final_dp_cost, final_options = (
-    dp_evaluator.solve(final_route)
-)
+    Parameters
+    ----------
+    offset_paths : list of rings (RAW, i.e. NOT already simplified --
+        this function calls simplify_offset_paths() on them internally,
+        exactly like the original script did. If you already simplified
+        upstream, don't simplify twice: pass the raw rings here instead).
+    config : optional override of the transition-cost weights
+        (defaults to the same DEFAULT_CONFIG the original script used).
+    ga_params : optional dict overriding population_size / generations /
+        mutation_rate / elite_ratio / tournament_size (defaults are the
+        exact same ones the original script hardcoded: 120 / 250 / 0.30 /
+        0.05 / 4).
+    make_plot : if True, shows the GA convergence plot exactly like the
+        original script's plt.show() did (blocking). Default False so
+        calling this from main.py doesn't pop up a window.
+    verbose : if True (default), prints the same progress/report lines
+        the original script printed.
 
-air_distance_before = (
-    total_air_distance_from_options(
-        initial_options
-    )
-)
+    Returns
+    -------
+    final_route : list[int]
+        The optimized order of path ids (post GA + 2-Opt++).
+    optimized_paths : list[dict]
+        Same shape the original script's `optimized_paths` had: each dict
+        has "points", "arc_segments", "sharp_corners", "start", "end", etc.
+        This is exactly what generate_Gcode.py's generate_gcode() expects.
+    """
+    from engine.dphull_integration import simplify_offset_paths
 
-air_distance_after_ga = (
-    total_air_distance_from_options(
-        ga_options
-    )
-)
+    if config is None:
+        config = DEFAULT_CONFIG
 
-air_distance_after_final = (
-    total_air_distance_from_options(
-        final_options
-    )
-)
+    ga_defaults = {
+        "population_size": 120,
+        "generations": 250,
+        "mutation_rate": 0.30,
+        "elite_ratio": 0.05,
+        "tournament_size": 4,
+    }
+    if ga_params:
+        ga_defaults.update(ga_params)
 
-air_time_before = total_air_time_seconds(
-    initial_options,
-    config["rapid_feed"]
-)
+    random.seed(42)
 
-air_time_after_ga = total_air_time_seconds(
-    ga_options,
-    config["rapid_feed"]
-)
-
-air_time_after_final = total_air_time_seconds(
-    final_options,
-    config["rapid_feed"]
-)
-
-long_jump_threshold = 20.0
-
-long_jumps_before = (
-    count_long_jumps_from_options(
-        initial_options,
-        threshold=long_jump_threshold
-    )
-)
-
-long_jumps_after_ga = (
-    count_long_jumps_from_options(
-        ga_options,
-        threshold=long_jump_threshold
-    )
-)
-
-long_jumps_after_final = (
-    count_long_jumps_from_options(
-        final_options,
-        threshold=long_jump_threshold
-    )
-)
-
-print("\n" + "=" * 60)
-print("DP-AWARE PATH OPTIMIZATION EVALUATION")
-print("=" * 60)
-
-print("\n1. Objective cost")
-print(f"Initial route      : {initial_dp_cost:.6f}")
-print(f"After GA           : {ga_dp_cost:.6f}")
-print(f"After 2-Opt++      : {final_dp_cost:.6f}")
-print(
-    "Final reduction   : "
-    f"{percentage_reduction(initial_dp_cost, final_dp_cost):.2f}%"
-)
-
-print("\n2. Total air-move distance")
-print(f"Initial route      : {air_distance_before:.3f} mm")
-print(f"After GA           : {air_distance_after_ga:.3f} mm")
-print(f"After 2-Opt++      : {air_distance_after_final:.3f} mm")
-print(
-    "Final reduction   : "
-    f"{percentage_reduction(air_distance_before, air_distance_after_final):.2f}%"
-)
-
-print("\n3. Estimated air-move time")
-print(f"Initial route      : {air_time_before:.3f} seconds")
-print(f"After GA           : {air_time_after_ga:.3f} seconds")
-print(f"After 2-Opt++      : {air_time_after_final:.3f} seconds")
-print(
-    "Final reduction   : "
-    f"{percentage_reduction(air_time_before, air_time_after_final):.2f}%"
-)
-
-print(
-    f"\n4. Long jumps greater than "
-    f"{long_jump_threshold:.1f} mm"
-)
-
-print(f"Initial route      : {long_jumps_before}")
-print(f"After GA           : {long_jumps_after_ga}")
-print(f"After 2-Opt++      : {long_jumps_after_final}")
-
-if long_jumps_before > 0:
-    print(
-        "Final reduction   : "
-        f"{percentage_reduction(long_jumps_before, long_jumps_after_final):.2f}%"
+    simplified_offset_paths = simplify_offset_paths(
+        offset_paths,
+        epsilon_mm=0.15,
     )
 
-print("=" * 60)
+    paths_info = build_path_representations(
+        simplified_offset_paths,
+        depth=-2.0,
+        clearance_height=5.0
+    )
+
+    if verbose:
+        print(f"Number of paths: {len(paths_info)}")
+
+    cost_matrix = build_cost_matrix(
+        paths_info,
+        config
+    )
+
+    initial_route = cheapest_insertion(cost_matrix)
+
+    if verbose:
+        print(
+            "Initial fixed-matrix cost:",
+            route_cost(initial_route, cost_matrix)
+        )
+
+    all_path_options = build_all_path_options(
+        paths_info,
+        sample_step=10,
+        max_entry_candidates=4
+    )
+
+    dp_evaluator = RouteDPEvaluator(
+        all_path_options,
+        config
+    )
+
+    initial_dp_cost = dp_evaluator.cost(
+        initial_route
+    )
+
+    if verbose:
+        print(
+            "Initial DP-aware cost:",
+            initial_dp_cost
+        )
+
+    best_route_ga, best_cost_ga, ga_history = (
+        genetic_algorithm(
+            initial_route=initial_route,
+            dp_evaluator=dp_evaluator,
+            population_size=ga_defaults["population_size"],
+            generations=ga_defaults["generations"],
+            mutation_rate=ga_defaults["mutation_rate"],
+            elite_ratio=ga_defaults["elite_ratio"],
+            tournament_size=ga_defaults["tournament_size"],
+            verbose=verbose,
+        )
+    )
+
+    if verbose:
+        print("Best GA DP-aware cost:", best_cost_ga)
+
+    final_route, final_cost = (
+        two_opt_plus_plus_dp(
+            best_route_ga,
+            dp_evaluator,
+            candidate_limit=20,
+            max_iterations=30
+        )
+    )
+
+    if verbose:
+        print("Final DP-aware cost:", final_cost)
+
+    final_cost, optimized_paths = (
+        dp_evaluator.solve(final_route)
+    )
+
+    optimized_paths = (
+        refresh_selected_path_geometry(
+            optimized_paths
+        )
+    )
+
+    optimized_paths = attach_arc_data_to_paths(
+        optimized_paths,
+        max_arc_error=max_arc_error
+    )
+
+    if verbose:
+        initial_dp_cost, initial_options = (
+            dp_evaluator.solve(initial_route)
+        )
+
+        ga_dp_cost, ga_options = (
+            dp_evaluator.solve(best_route_ga)
+        )
+
+        final_dp_cost, final_options = (
+            dp_evaluator.solve(final_route)
+        )
+
+        air_distance_before = (
+            total_air_distance_from_options(
+                initial_options
+            )
+        )
+
+        air_distance_after_ga = (
+            total_air_distance_from_options(
+                ga_options
+            )
+        )
+
+        air_distance_after_final = (
+            total_air_distance_from_options(
+                final_options
+            )
+        )
+
+        air_time_before = total_air_time_seconds(
+            initial_options,
+            config["rapid_feed"]
+        )
+
+        air_time_after_ga = total_air_time_seconds(
+            ga_options,
+            config["rapid_feed"]
+        )
+
+        air_time_after_final = total_air_time_seconds(
+            final_options,
+            config["rapid_feed"]
+        )
+
+        long_jumps_before = (
+            count_long_jumps_from_options(
+                initial_options,
+                threshold=long_jump_threshold
+            )
+        )
+
+        long_jumps_after_ga = (
+            count_long_jumps_from_options(
+                ga_options,
+                threshold=long_jump_threshold
+            )
+        )
+
+        long_jumps_after_final = (
+            count_long_jumps_from_options(
+                final_options,
+                threshold=long_jump_threshold
+            )
+        )
+
+        print("\n" + "=" * 60)
+        print("DP-AWARE PATH OPTIMIZATION EVALUATION")
+        print("=" * 60)
+
+        print("\n1. Objective cost")
+        print(f"Initial route      : {initial_dp_cost:.6f}")
+        print(f"After GA           : {ga_dp_cost:.6f}")
+        print(f"After 2-Opt++      : {final_dp_cost:.6f}")
+        print(
+            "Final reduction   : "
+            f"{percentage_reduction(initial_dp_cost, final_dp_cost):.2f}%"
+        )
+
+        print("\n2. Total air-move distance")
+        print(f"Initial route      : {air_distance_before:.3f} mm")
+        print(f"After GA           : {air_distance_after_ga:.3f} mm")
+        print(f"After 2-Opt++      : {air_distance_after_final:.3f} mm")
+        print(
+            "Final reduction   : "
+            f"{percentage_reduction(air_distance_before, air_distance_after_final):.2f}%"
+        )
+
+        print("\n3. Estimated air-move time")
+        print(f"Initial route      : {air_time_before:.3f} seconds")
+        print(f"After GA           : {air_time_after_ga:.3f} seconds")
+        print(f"After 2-Opt++      : {air_time_after_final:.3f} seconds")
+        print(
+            "Final reduction   : "
+            f"{percentage_reduction(air_time_before, air_time_after_final):.2f}%"
+        )
+
+        print(
+            f"\n4. Long jumps greater than "
+            f"{long_jump_threshold:.1f} mm"
+        )
+
+        print(f"Initial route      : {long_jumps_before}")
+        print(f"After GA           : {long_jumps_after_ga}")
+        print(f"After 2-Opt++      : {long_jumps_after_final}")
+
+        if long_jumps_before > 0:
+            print(
+                "Final reduction   : "
+                f"{percentage_reduction(long_jumps_before, long_jumps_after_final):.2f}%"
+            )
+
+        print("=" * 60)
+
+        if make_plot:
+            plt.figure(figsize=(9, 6))
+            plt.plot(ga_history)
+            plt.xlabel("Generation")
+            plt.ylabel("Best DP-aware Cost")
+            plt.title("GA Convergence with Entry/Exit Dynamic Programming")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.show()
+    elif make_plot:
+        plt.figure(figsize=(9, 6))
+        plt.plot(ga_history)
+        plt.xlabel("Generation")
+        plt.ylabel("Best DP-aware Cost")
+        plt.title("GA Convergence with Entry/Exit Dynamic Programming")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+    return final_route, optimized_paths
 
 
 # ============================================================
-# 13. GA convergence plot
+# Standalone use (python pathOptimizstion.py) -- same behavior
+# as the original script: reads engine.pathOffset.offset_paths,
+# runs everything, shows the plot.
 # ============================================================
+if __name__ == "__main__":
+    from engine import pathOffset as offset
 
-plt.figure(figsize=(9, 6))
-plt.plot(ga_history)
-plt.xlabel("Generation")
-plt.ylabel("Best DP-aware Cost")
-plt.title("GA Convergence with Entry/Exit Dynamic Programming")
-plt.grid(True)
-plt.tight_layout()
-plt.show()
+    final_route, optimized_paths = optimize_paths_advanced(
+        offset.offset_paths,
+        make_plot=True,
+        verbose=True,
+    )
