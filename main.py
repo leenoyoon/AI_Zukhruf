@@ -15,7 +15,9 @@ from engine.pathOptimizstion import optimize_paths_advanced
 
 # -- مأخوذتين من الملف الأول (فرح): توليد G-code المتحقّق من مدخلات
 #    المستخدم + معاينة المحاكاة HTML، بدل write_gcode البسيطة --
-from engine.generate_Gcode import generate_gcode_from_user_input
+# تحديث: صرنا نستخدم النسخة اللي بترجع تقرير تحليلي (with_report) مع
+# print_gcode_report لعرضه، بدل النسخة اللي بترجع نص G-code بس.
+from engine.generate_Gcode import generate_gcode_from_user_input_with_report, print_gcode_report
 from engine.simulate import generate_gcode_simulation_html
 
 
@@ -32,6 +34,7 @@ def process_image_to_gcode(
     plunge_rate=300.0,
     spindle_speed=12000,
     safe_z=5.0,
+    machine_hourly_rate=20,  # اختياري: بيفعّل تقدير التكلفة (Cost) بالتقرير
 ):
     print(f"--- Processing: {os.path.basename(image_path)} ---")
 
@@ -97,6 +100,12 @@ def process_image_to_gcode(
     _final_route, ordered = optimize_paths_advanced(offset_paths)
 
     # -------- G-code + Simulation (فرح) -- هون التبديل --------
+    # tool_diameter_mm/stepover_mm بينمرروا للتقرير عشان يشتغل عليهم Peak MRR
+    # وتقدير حجم المادة المُزالة، باستخدام used_tool_mm (الأداة المستخدمة
+    # فعلياً بعد أي تبديل فوق، مش tool_dia_mm الأصلية المطلوبة). stepover_mm
+    # بيعكس المسافة الحقيقية بين المسارات المتجاورة عشان تقدير الحجم ما
+    # ينضخم لمسارات التفريغ/offset-fill متل هاي (راجعي
+    # generate_Gcode._estimate_material_removal لتفاصيل السبب).
     user_settings = {
         "safe_z": safe_z,
         "cut_depth": depth,
@@ -104,8 +113,11 @@ def process_image_to_gcode(
         "feed_rate": feed_rate,
         "plunge_rate": plunge_rate,
         "spindle_speed": spindle_speed,
+        "tool_diameter_mm": used_tool_mm,
+        "stepover_mm": used_tool_mm * step_over_ratio,
+        "machine_hourly_rate": machine_hourly_rate,
     }
-    gcode_content = generate_gcode_from_user_input(
+    gcode_content, report = generate_gcode_from_user_input_with_report(
         optimized_paths=ordered,
         user_settings=user_settings,
     )
@@ -124,6 +136,8 @@ def process_image_to_gcode(
     print(f"[G-Code] Successfully generated and saved to: {output_path} "
           f"(tool actually used: {used_tool_mm}mm)")
     print(f"[Simulation] Preview saved to: {html_simulation_path}")
+
+    print_gcode_report(report)
 
 
 if __name__ == "__main__":
