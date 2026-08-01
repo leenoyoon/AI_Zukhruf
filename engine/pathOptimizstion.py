@@ -1,76 +1,10 @@
-"""
-pathOptimizstion.py (refactored to be importable, logic untouched)
---------------------------------------------------------------------------
-WHAT CHANGED vs the original file, and what did NOT:
-
-  NOT changed (byte-for-byte the same algorithm):
-    - every geometry helper (distance, is_closed_path, path_length,
-      angle_between, detect_sharp_corners, detect_straight_segments,
-      detect_curved_segments)
-    - arc fitting (circle_from_3_points, point_circle_error,
-      arc_direction, fit_arc_to_curved_segment, build_path_representations)
-    - cost model (vector, compute_direction_penalty, compute_jerk_penalty,
-      compute_corner_penalty, compute_transition_cost)
-    - cost matrix / cheapest insertion (build_cost_matrix, get_cost,
-      route_cost, cheapest_insertion)
-    - per-path option generation (generate_path_options,
-      build_all_path_options)
-    - the DP evaluator (RouteDPEvaluator, unchanged)
-    - the Genetic Algorithm (perturb_route, create_initial_population,
-      tournament_selection, order_crossover, mutate_route, get_elites,
-      genetic_algorithm) -- same population_size=120, generations=250,
-      mutation_rate=0.30, elite_ratio=0.05, tournament_size=4,
-      random.seed(42)
-    - 2-Opt++ (two_opt_swap, two_opt_plus_plus_dp) -- same
-      candidate_limit=20, max_iterations=30
-    - arc/segment refresh + evaluation metrics (refresh_selected_path_geometry,
-      attach_arc_data_to_paths, total_air_distance_from_options,
-      total_air_time_seconds, count_long_jumps_from_options,
-      percentage_reduction)
-    - the default `config` dict (same weights, same rapid_feed=5000)
-
-  Changed (structure only, not math):
-    - Everything that used to run automatically at import time (reading
-      `offset.offset_paths`, building paths_info, the cost matrix, running
-      the GA, running 2-Opt++, printing the report, calling plt.show())
-      is now inside `optimize_paths_advanced(offset_paths, ...)`. It runs
-      only when you call that function, and it RETURNS the result instead
-      of leaving it in module-level globals.
-    - `plt.show()` is now gated behind `make_plot=False` by default, so
-      importing/calling this from main.py doesn't pop up a blocking window.
-      Pass `make_plot=True` to get the exact same convergence plot as before.
-    - Console printing is gated behind `verbose=True` (default on, same
-      messages as before) so it's silent-able for automated pipelines.
-    - The function takes `offset_paths` as a normal argument instead of
-      reading a module-level global `offset.offset_paths` at import time.
-      Internally it still calls `simplify_offset_paths(...)` on that input
-      first, exactly like the original script did -- so pass it the RAW
-      offset paths (before simplification), not an already-simplified list,
-      or you'd be simplifying twice.
-
-  Return value:
-    `final_route, optimized_paths = optimize_paths_advanced(offset_paths)`
-    `optimized_paths` is a list of dicts (path_id, points, arc_segments,
-    sharp_corners, straight_segments, curved_segments, start, end, ...) --
-    the exact same shape the original script produced, and the exact shape
-    `generate_Gcode.py`'s `generate_gcode()` already expects
-    (`path.get("points", [])`, `path.get("arc_segments", [])`).
---------------------------------------------------------------------------
-"""
-
 from math import hypot, acos, degrees, sqrt
 import random
 import numpy as np
 import matplotlib.pyplot as plt
 
-
-# ============================================================
-# 1. Path representation and geometric analysis
-# ============================================================
-
 def distance(p1, p2):
     return hypot(p2[0] - p1[0], p2[1] - p1[1])
-
 
 def is_closed_path(path, tol=1e-6):
     if len(path) < 3:
@@ -202,41 +136,58 @@ def detect_curved_segments(path, angle_tolerance=10, min_points=4):
     return curved_segments
 
 
-# ============================================================
-# 2. Arc fitting
-# ============================================================
+def _make_tag_lookup(path, tags):
+    if not tags or len(tags) != len(path):
+        return None
+    return {(round(p[0], 4), round(p[1], 4)): t for p, t in zip(path, tags)}
+
+
+def detect_curved_segments_from_tags(path, tag_lookup, min_points=3):
+    if not tag_lookup:
+        return []
+
+    curved_segments = []
+    current_segment = []
+
+    for pt in path:
+        tag = tag_lookup.get((round(pt[0], 4), round(pt[1], 4)))
+        if tag == "curve":
+            current_segment.append(pt)
+        else:
+            if len(current_segment) >= min_points:
+                curved_segments.append({"points": current_segment})
+            current_segment = []
+
+    if len(current_segment) >= min_points:
+        curved_segments.append({"points": current_segment})
+
+    return curved_segments
+
 
 def circle_from_3_points(p1, p2, p3):
     x1, y1 = p1
     x2, y2 = p2
     x3, y3 = p3
-
     temp = x2 ** 2 + y2 ** 2
     bc = (x1 ** 2 + y1 ** 2 - temp) / 2
     cd = (temp - x3 ** 2 - y3 ** 2) / 2
-
     det = (
         (x1 - x2) * (y2 - y3)
         - (x2 - x3) * (y1 - y2)
     )
-
     if abs(det) < 1e-9:
         return None
 
     cx = (bc * (y2 - y3) - cd * (y1 - y2)) / det
     cy = ((x1 - x2) * cd - (x2 - x3) * bc) / det
-
     radius = sqrt((cx - x1) ** 2 + (cy - y1) ** 2)
-
     return cx, cy, radius
 
 
 def point_circle_error(point, circle):
     cx, cy, radius = circle
     x, y = point
-
     current_radius = sqrt((x - cx) ** 2 + (y - cy) ** 2)
-
     return abs(current_radius - radius)
 
 
@@ -245,29 +196,22 @@ def arc_direction(p_start, p_mid, p_end):
         p_mid[0] - p_start[0],
         p_mid[1] - p_start[1]
     )
-
     v2 = (
         p_end[0] - p_mid[0],
         p_end[1] - p_mid[1]
     )
-
     cross = v1[0] * v2[1] - v1[1] * v2[0]
-
-    return "G02" if cross < 0 else "G03"
+    return "G2" if cross < 0 else "G3"
 
 
 def fit_arc_to_curved_segment(curved_segment, max_arc_error=0.15):
     points = curved_segment["points"]
-
     if len(points) < 3:
         return None
-
     start = points[0]
     mid = points[len(points) // 2]
     end = points[-1]
-
     circle = circle_from_3_points(start, mid, end)
-
     if circle is None:
         return None
 
@@ -275,7 +219,6 @@ def fit_arc_to_curved_segment(curved_segment, max_arc_error=0.15):
         point_circle_error(point, circle)
         for point in points
     )
-
     if max_error > max_arc_error:
         return None
 
@@ -295,10 +238,12 @@ def build_path_representations(
     offset_paths,
     depth=-2.0,
     clearance_height=5.0,
-    close_tol=1e-6
+    close_tol=1e-6,
+    tags_per_path=None,
+    verbose=True,
 ):
     represented_paths = []
-
+    dropped_degenerate = 0
     for path_id, path in enumerate(offset_paths):
         if len(path) < 2:
             continue
@@ -308,9 +253,20 @@ def build_path_representations(
             if is_closed_path(path, close_tol)
             else "open"
         )
+        if path_type == "closed":
+            n_effective = len(path) - 1 if distance(path[0], path[-1]) <= close_tol else len(path)
+            if n_effective < 3:
+                dropped_degenerate += 1
+                continue
+
+        path_tags = tags_per_path[path_id] if tags_per_path is not None and path_id < len(tags_per_path) else None
+        tag_lookup = _make_tag_lookup(path, path_tags)
+        curved = detect_curved_segments_from_tags(path, tag_lookup)
+        if not curved:
+            curved = detect_curved_segments(path)
 
         item = {
-            "id": path_id,
+            "id": len(represented_paths),
             "type": path_type,
             "points": path,
             "start": path[0],
@@ -320,8 +276,9 @@ def build_path_representations(
             "clearance_height": clearance_height,
             "direction_options": [],
             "straight_segments": detect_straight_segments(path),
-            "curved_segments": detect_curved_segments(path),
-            "sharp_corners": detect_sharp_corners(path)
+            "curved_segments": curved,
+            "sharp_corners": detect_sharp_corners(path),
+            "curve_tag_lookup": tag_lookup,
         }
 
         if path_type == "open":
@@ -352,12 +309,11 @@ def build_path_representations(
 
         represented_paths.append(item)
 
+    if verbose and dropped_degenerate:
+        print(f"[paths] dropped {dropped_degenerate} degenerate ring(s) "
+              f"(collapsed to < 3 distinct points, not machinable as a closed path)")
     return represented_paths
 
-
-# ============================================================
-# 3. CNC-aware transition cost
-# ============================================================
 
 def vector(p1, p2):
     return p2[0] - p1[0], p2[1] - p1[1]
@@ -365,15 +321,12 @@ def vector(p1, p2):
 
 def compute_direction_penalty(node_a, node_b):
     path_a = node_a["points"]
-
     if len(path_a) < 2:
         return 0.0
 
     last_segment = vector(path_a[-2], path_a[-1])
     transition = vector(path_a[-1], node_b["start"])
-
     angle = angle_between(last_segment, transition)
-
     if angle is None:
         return 0.0
 
@@ -382,18 +335,15 @@ def compute_direction_penalty(node_a, node_b):
 
 def compute_jerk_penalty(node_a, node_b):
     path_a = node_a["points"]
-
     if len(path_a) < 2:
         return 0.0
 
     previous_direction = vector(path_a[-2], path_a[-1])
     transition_direction = vector(path_a[-1], node_b["start"])
-
     angle = angle_between(
         previous_direction,
         transition_direction
     )
-
     if angle is None:
         return 0.0
 
@@ -419,29 +369,23 @@ def compute_transition_cost(node_a, node_b, config):
         node_a["end"],
         node_b["start"]
     )
-
     air_time = (
         xy_distance /
         config["rapid_feed"]
     )
-
     z_move = abs(
         config["clearance_height"] -
         node_b["depth"]
     ) * 2
-
     direction_penalty = compute_direction_penalty(
         node_a,
         node_b
     )
-
     jerk_penalty = compute_jerk_penalty(
         node_a,
         node_b
     )
-
     corner_penalty = compute_corner_penalty(node_b)
-
     total_cost = (
         config["w_distance"] * xy_distance
         + config["w_air_time"] * air_time
@@ -450,7 +394,6 @@ def compute_transition_cost(node_a, node_b, config):
         + config["w_jerk"] * jerk_penalty
         + config["w_corner"] * corner_penalty
     )
-
     return {
         "xy_distance": xy_distance,
         "air_time": air_time,
@@ -462,7 +405,6 @@ def compute_transition_cost(node_a, node_b, config):
     }
 
 
-# Same default config dict as the original script -- untouched values.
 DEFAULT_CONFIG = {
     "rapid_feed": 5000,
     "clearance_height": 5.0,
@@ -475,18 +417,12 @@ DEFAULT_CONFIG = {
 }
 
 
-# ============================================================
-# 4. Fixed cost matrix used only to create the initial ordering
-# ============================================================
-
 def build_cost_matrix(nodes, config):
     number_of_nodes = len(nodes)
-
     matrix = [
         [None for _ in range(number_of_nodes)]
         for _ in range(number_of_nodes)
     ]
-
     for i in range(number_of_nodes):
         for j in range(number_of_nodes):
             if i == j:
@@ -519,13 +455,8 @@ def route_cost(route, cost_matrix):
     )
 
 
-# ============================================================
-# 5. Cheapest Insertion for the initial order
-# ============================================================
-
 def cheapest_insertion(cost_matrix):
     number_of_nodes = len(cost_matrix)
-
     if number_of_nodes == 0:
         return []
 
@@ -534,7 +465,6 @@ def cheapest_insertion(cost_matrix):
 
     best_start = None
     best_start_cost = float("inf")
-
     for i in range(number_of_nodes):
         for j in range(number_of_nodes):
             if i == j:
@@ -545,21 +475,17 @@ def cheapest_insertion(cost_matrix):
                 i,
                 j
             )
-
             if current_cost < best_start_cost:
                 best_start_cost = current_cost
                 best_start = (i, j)
-
+                
     route = [best_start[0], best_start[1]]
-
     unvisited = set(range(number_of_nodes))
     unvisited.remove(best_start[0])
     unvisited.remove(best_start[1])
-
     while unvisited:
         best_insertion = None
         best_delta = float("inf")
-
         for node in unvisited:
             for position in range(len(route) + 1):
                 if position == 0:
@@ -568,24 +494,20 @@ def cheapest_insertion(cost_matrix):
                         node,
                         route[0]
                     )
-
                 elif position == len(route):
                     delta = get_cost(
                         cost_matrix,
                         route[-1],
                         node
                     )
-
                 else:
                     previous_node = route[position - 1]
                     next_node = route[position]
-
                     old_cost = get_cost(
                         cost_matrix,
                         previous_node,
                         next_node
                     )
-
                     new_cost = (
                         get_cost(
                             cost_matrix,
@@ -598,7 +520,6 @@ def cheapest_insertion(cost_matrix):
                             next_node
                         )
                     )
-
                     delta = new_cost - old_cost
 
                 if delta < best_delta:
@@ -615,11 +536,6 @@ def cheapest_insertion(cost_matrix):
     return route
 
 
-# ============================================================
-# 6. Generate machining options for every path
-#    (direction + entry point, evaluated together with order)
-# ============================================================
-
 def generate_path_options(
     node,
     sample_step=10,
@@ -631,7 +547,6 @@ def generate_path_options(
         return []
 
     options = []
-
     common_data = {
         "path_id": node["id"],
         "type": node["type"],
@@ -639,9 +554,9 @@ def generate_path_options(
         "clearance_height": node["clearance_height"],
         "sharp_corners": node.get("sharp_corners", []),
         "curved_segments": node.get("curved_segments", []),
-        "straight_segments": node.get("straight_segments", [])
+        "straight_segments": node.get("straight_segments", []),
+        "curve_tag_lookup": node.get("curve_tag_lookup"),
     }
-
     if node["type"] == "open":
         options.append({
             **common_data,
@@ -652,9 +567,7 @@ def generate_path_options(
             "start": path[0],
             "end": path[-1]
         })
-
         reversed_path = list(reversed(path))
-
         options.append({
             **common_data,
             "option_id": 1,
@@ -664,7 +577,6 @@ def generate_path_options(
             "start": reversed_path[0],
             "end": reversed_path[-1]
         })
-
         return options
 
     if distance(path[0], path[-1]) <= 1e-6:
@@ -693,23 +605,19 @@ def generate_path_options(
             max_entry_candidates,
             dtype=int
         )
-
         candidate_indices = [
             candidate_indices[position]
             for position in selected_positions
         ]
 
     option_id = 0
-
     for entry_index in candidate_indices:
         entry_point = base_path[entry_index]
-
         original_points = (
             base_path[entry_index:]
             + base_path[:entry_index]
             + [entry_point]
         )
-
         options.append({
             **common_data,
             "option_id": option_id,
@@ -719,23 +627,18 @@ def generate_path_options(
             "start": original_points[0],
             "end": original_points[-1]
         })
-
         option_id += 1
-
         reversed_base = list(reversed(base_path))
-
         reverse_entry_index = next(
             index
             for index, point in enumerate(reversed_base)
             if distance(point, entry_point) <= 1e-9
         )
-
         reverse_points = (
             reversed_base[reverse_entry_index:]
             + reversed_base[:reverse_entry_index]
             + [entry_point]
         )
-
         options.append({
             **common_data,
             "option_id": option_id,
@@ -745,7 +648,6 @@ def generate_path_options(
             "start": reverse_points[0],
             "end": reverse_points[-1]
         })
-
         option_id += 1
 
     return options
@@ -766,17 +668,13 @@ def build_all_path_options(
     }
 
 
-# ============================================================
-# 7. Dynamic Programming evaluator
-#    (for each proposed order, choose the best options jointly)
-# ============================================================
-
 class RouteDPEvaluator:
     def __init__(self, all_path_options, config):
         self.all_path_options = all_path_options
         self.config = config
         self.route_cost_cache = {}
         self.transition_matrix_cache = {}
+
 
     def _transition_matrix(
         self,
@@ -787,18 +685,15 @@ class RouteDPEvaluator:
             previous_path_id,
             current_path_id
         )
-
         if key in self.transition_matrix_cache:
             return self.transition_matrix_cache[key]
 
         previous_options = self.all_path_options[
             previous_path_id
         ]
-
         current_options = self.all_path_options[
             current_path_id
         ]
-
         matrix = np.empty(
             (
                 len(previous_options),
@@ -806,7 +701,6 @@ class RouteDPEvaluator:
             ),
             dtype=float
         )
-
         for previous_index, previous_option in enumerate(
             previous_options
         ):
@@ -823,7 +717,6 @@ class RouteDPEvaluator:
                 )["total_cost"]
 
         self.transition_matrix_cache[key] = matrix
-
         return matrix
 
     def evaluate(
@@ -840,7 +733,6 @@ class RouteDPEvaluator:
         first_options = self.all_path_options[
             route[0]
         ]
-
         if not first_options:
             if return_selected_options:
                 return float("inf"), []
@@ -851,9 +743,7 @@ class RouteDPEvaluator:
             len(first_options),
             dtype=float
         )
-
         backtracking = []
-
         for route_position in range(
             1,
             len(route)
@@ -861,10 +751,14 @@ class RouteDPEvaluator:
             previous_path_id = route[
                 route_position - 1
             ]
-
             current_path_id = route[
                 route_position
             ]
+            current_options = self.all_path_options[current_path_id]
+            if not current_options:
+                if return_selected_options:
+                    return float("inf"), []
+                return float("inf")
 
             transition_matrix = (
                 self._transition_matrix(
@@ -872,51 +766,42 @@ class RouteDPEvaluator:
                     current_path_id
                 )
             )
-
             combined_costs = (
                 previous_costs[:, None]
                 + transition_matrix
             )
-
             best_parent_indices = np.argmin(
                 combined_costs,
                 axis=0
             )
-
             current_costs = combined_costs[
                 best_parent_indices,
                 np.arange(
                     combined_costs.shape[1]
                 )
             ]
-
             backtracking.append(
                 best_parent_indices
             )
-
             previous_costs = current_costs
 
         best_final_option_index = int(
             np.argmin(previous_costs)
         )
-
         best_cost = float(
             previous_costs[
                 best_final_option_index
             ]
         )
-
         if not return_selected_options:
             return best_cost
 
         selected_option_indices = [
             best_final_option_index
         ]
-
         current_option_index = (
             best_final_option_index
         )
-
         for parent_indices in reversed(
             backtracking
         ):
@@ -925,13 +810,11 @@ class RouteDPEvaluator:
                     current_option_index
                 ]
             )
-
             selected_option_indices.append(
                 current_option_index
             )
 
         selected_option_indices.reverse()
-
         selected_options = [
             self.all_path_options[path_id][option_index]
             for path_id, option_index in zip(
@@ -939,12 +822,11 @@ class RouteDPEvaluator:
                 selected_option_indices
             )
         ]
-
         return best_cost, selected_options
+
 
     def cost(self, route):
         key = tuple(route)
-
         if key not in self.route_cost_cache:
             self.route_cost_cache[key] = (
                 self.evaluate(
@@ -955,6 +837,7 @@ class RouteDPEvaluator:
 
         return self.route_cost_cache[key]
 
+
     def solve(self, route):
         return self.evaluate(
             route,
@@ -962,31 +845,24 @@ class RouteDPEvaluator:
         )
 
 
-# ============================================================
-# 8. Genetic Algorithm helpers
-# ============================================================
-
 def perturb_route(route, strength=3):
     candidate = route[:]
-
     for _ in range(strength):
         operation = random.choice([
             "swap",
             "inversion",
             "insertion"
         ])
-
         if operation == "swap":
             i, j = random.sample(
                 range(len(candidate)),
                 2
             )
-
             candidate[i], candidate[j] = (
                 candidate[j],
                 candidate[i]
             )
-
+            
         elif operation == "inversion":
             i, j = sorted(
                 random.sample(
@@ -994,7 +870,6 @@ def perturb_route(route, strength=3):
                     2
                 )
             )
-
             candidate[i:j + 1] = reversed(
                 candidate[i:j + 1]
             )
@@ -1004,7 +879,6 @@ def perturb_route(route, strength=3):
                 range(len(candidate)),
                 2
             )
-
             node = candidate.pop(i)
             candidate.insert(j, node)
 
@@ -1016,11 +890,9 @@ def create_initial_population(
     population_size
 ):
     population = [initial_route[:]]
-
     seeded_size = int(
         population_size * 0.80
     )
-
     while len(population) < seeded_size:
         population.append(
             perturb_route(
@@ -1028,7 +900,6 @@ def create_initial_population(
                 strength=random.randint(1, 8)
             )
         )
-
     while len(population) < population_size:
         candidate = initial_route[:]
         random.shuffle(candidate)
@@ -1046,7 +917,6 @@ def tournament_selection(
         population,
         tournament_size
     )
-
     return min(
         candidates,
         key=dp_evaluator.cost
@@ -1055,7 +925,6 @@ def tournament_selection(
 
 def order_crossover(parent1, parent2):
     number_of_nodes = len(parent1)
-
     if number_of_nodes < 2:
         return parent1[:]
 
@@ -1065,15 +934,11 @@ def order_crossover(parent1, parent2):
             2
         )
     )
-
     child = [None] * number_of_nodes
-
     child[start:end + 1] = (
         parent1[start:end + 1]
     )
-
     parent2_index = 0
-
     for child_index in range(number_of_nodes):
         if child[child_index] is not None:
             continue
@@ -1096,7 +961,6 @@ def mutate_route(
     mutation_rate=0.30
 ):
     mutated = route[:]
-
     if random.random() >= mutation_rate:
         return mutated
 
@@ -1106,7 +970,6 @@ def mutate_route(
         "insertion",
         "scramble"
     ])
-
     i, j = sorted(
         random.sample(
             range(len(mutated)),
@@ -1146,7 +1009,6 @@ def get_elites(
         population,
         key=dp_evaluator.cost
     )
-
     return [
         route[:]
         for route in sorted_population[
@@ -1154,10 +1016,6 @@ def get_elites(
         ]
     ]
 
-
-# ============================================================
-# 9. Genetic Algorithm using the DP-aware fitness
-# ============================================================
 
 def genetic_algorithm(
     initial_route,
@@ -1173,7 +1031,6 @@ def genetic_algorithm(
         initial_route,
         population_size
     )
-
     elite_size = max(
         1,
         int(
@@ -1181,31 +1038,25 @@ def genetic_algorithm(
             elite_ratio
         )
     )
-
     best_route = initial_route[:]
     best_cost = dp_evaluator.cost(
         best_route
     )
-
     history = []
-
     for generation in range(generations):
         population = sorted(
             population,
             key=dp_evaluator.cost
         )
-
         current_best = population[0]
         current_cost = dp_evaluator.cost(
             current_best
         )
-
         if current_cost < best_cost:
             best_route = current_best[:]
             best_cost = current_cost
 
         history.append(best_cost)
-
         new_population = get_elites(
             population,
             dp_evaluator,
@@ -1267,7 +1118,6 @@ def genetic_algorithm(
             )
 
         population = new_population
-
         if verbose and (
             generation == 0
             or (generation + 1) % 25 == 0
@@ -1280,10 +1130,6 @@ def genetic_algorithm(
 
     return best_route, best_cost, history
 
-
-# ============================================================
-# 10. 2-Opt++ evaluated using the same DP-aware objective
-# ============================================================
 
 def two_opt_swap(route, i, k):
     return (
@@ -1352,24 +1198,18 @@ def two_opt_plus_plus_dp(
     return best_route, best_cost
 
 
-# ============================================================
-# 11. Recover the final direction and entry/exit selections
-# ============================================================
-
 def refresh_selected_path_geometry(
     optimized_paths
 ):
     for path in optimized_paths:
         points = path["points"]
-
         path["straight_segments"] = (
             detect_straight_segments(points)
         )
-
-        path["curved_segments"] = (
-            detect_curved_segments(points)
+        curved = detect_curved_segments_from_tags(
+            points, path.get("curve_tag_lookup")
         )
-
+        path["curved_segments"] = curved if curved else detect_curved_segments(points)
         path["sharp_corners"] = (
             detect_sharp_corners(points)
         )
@@ -1383,7 +1223,6 @@ def attach_arc_data_to_paths(
 ):
     for path in optimized_paths:
         arcs = []
-
         for curved_segment in path.get(
             "curved_segments",
             []
@@ -1392,7 +1231,6 @@ def attach_arc_data_to_paths(
                 curved_segment,
                 max_arc_error=max_arc_error
             )
-
             if arc is not None:
                 arcs.append(arc)
 
@@ -1400,10 +1238,6 @@ def attach_arc_data_to_paths(
 
     return optimized_paths
 
-
-# ============================================================
-# 12. Evaluation
-# ============================================================
 
 def total_air_distance_from_options(
     selected_options
@@ -1463,11 +1297,6 @@ def percentage_reduction(
     ) * 100.0
 
 
-# ============================================================
-# Entry point: everything the original script did at import
-# time, unchanged, now inside one callable function.
-# ============================================================
-
 def optimize_paths_advanced(
     offset_paths,
     config=None,
@@ -1476,38 +1305,10 @@ def optimize_paths_advanced(
     long_jump_threshold=20.0,
     make_plot=False,
     verbose=True,
+    pixel_to_mm=None,
+    epsilon_mm=None,
 ):
-    """
-    Drop-in advanced replacement for gcode_generator.optimize_paths().
-
-    Parameters
-    ----------
-    offset_paths : list of rings (RAW, i.e. NOT already simplified --
-        this function calls simplify_offset_paths() on them internally,
-        exactly like the original script did. If you already simplified
-        upstream, don't simplify twice: pass the raw rings here instead).
-    config : optional override of the transition-cost weights
-        (defaults to the same DEFAULT_CONFIG the original script used).
-    ga_params : optional dict overriding population_size / generations /
-        mutation_rate / elite_ratio / tournament_size (defaults are the
-        exact same ones the original script hardcoded: 120 / 250 / 0.30 /
-        0.05 / 4).
-    make_plot : if True, shows the GA convergence plot exactly like the
-        original script's plt.show() did (blocking). Default False so
-        calling this from main.py doesn't pop up a window.
-    verbose : if True (default), prints the same progress/report lines
-        the original script printed.
-
-    Returns
-    -------
-    final_route : list[int]
-        The optimized order of path ids (post GA + 2-Opt++).
-    optimized_paths : list[dict]
-        Same shape the original script's `optimized_paths` had: each dict
-        has "points", "arc_segments", "sharp_corners", "start", "end", etc.
-        This is exactly what generate_Gcode.py's generate_gcode() expects.
-    """
-    from engine.dphull_integration import simplify_offset_paths
+    from engine.dphull_integration import simplify_offset_paths_with_curve_tags
 
     if config is None:
         config = DEFAULT_CONFIG
@@ -1522,19 +1323,29 @@ def optimize_paths_advanced(
     if ga_params:
         ga_defaults.update(ga_params)
 
-    random.seed(42)
+    random.seed(42) 
+    
+    if epsilon_mm is None:
+        if pixel_to_mm:
+            epsilon_mm = max(0.1, 0.5 * pixel_to_mm)
+        else:
+            epsilon_mm = 0.15  
 
-    simplified_offset_paths = simplify_offset_paths(
+    if verbose:
+        print(f"[dphull] using epsilon_mm={epsilon_mm:.3f}"
+              + (f" (auto from pixel_to_mm={pixel_to_mm:.4f})" if pixel_to_mm else " (fixed default)"))
+
+    simplified_offset_paths, curve_tags = simplify_offset_paths_with_curve_tags(
         offset_paths,
-        epsilon_mm=0.15,
+        epsilon_mm=epsilon_mm,
     )
-
     paths_info = build_path_representations(
         simplified_offset_paths,
         depth=-2.0,
-        clearance_height=5.0
+        clearance_height=5.0,
+        tags_per_path=curve_tags,
+        verbose=verbose,
     )
-
     if verbose:
         print(f"Number of paths: {len(paths_info)}")
 
@@ -1542,9 +1353,7 @@ def optimize_paths_advanced(
         paths_info,
         config
     )
-
     initial_route = cheapest_insertion(cost_matrix)
-
     if verbose:
         print(
             "Initial fixed-matrix cost:",
@@ -1556,16 +1365,13 @@ def optimize_paths_advanced(
         sample_step=10,
         max_entry_candidates=4
     )
-
     dp_evaluator = RouteDPEvaluator(
         all_path_options,
         config
     )
-
     initial_dp_cost = dp_evaluator.cost(
         initial_route
     )
-
     if verbose:
         print(
             "Initial DP-aware cost:",
@@ -1584,7 +1390,6 @@ def optimize_paths_advanced(
             verbose=verbose,
         )
     )
-
     if verbose:
         print("Best GA DP-aware cost:", best_cost_ga)
 
@@ -1596,96 +1401,79 @@ def optimize_paths_advanced(
             max_iterations=30
         )
     )
-
     if verbose:
         print("Final DP-aware cost:", final_cost)
 
     final_cost, optimized_paths = (
         dp_evaluator.solve(final_route)
     )
-
     optimized_paths = (
         refresh_selected_path_geometry(
             optimized_paths
         )
     )
-
     optimized_paths = attach_arc_data_to_paths(
         optimized_paths,
         max_arc_error=max_arc_error
     )
-
     if verbose:
         initial_dp_cost, initial_options = (
             dp_evaluator.solve(initial_route)
         )
-
         ga_dp_cost, ga_options = (
             dp_evaluator.solve(best_route_ga)
         )
-
         final_dp_cost, final_options = (
             dp_evaluator.solve(final_route)
         )
-
         air_distance_before = (
             total_air_distance_from_options(
                 initial_options
             )
         )
-
         air_distance_after_ga = (
             total_air_distance_from_options(
                 ga_options
             )
         )
-
         air_distance_after_final = (
             total_air_distance_from_options(
                 final_options
             )
         )
-
         air_time_before = total_air_time_seconds(
             initial_options,
             config["rapid_feed"]
         )
-
         air_time_after_ga = total_air_time_seconds(
             ga_options,
             config["rapid_feed"]
         )
-
         air_time_after_final = total_air_time_seconds(
             final_options,
             config["rapid_feed"]
         )
-
         long_jumps_before = (
             count_long_jumps_from_options(
                 initial_options,
                 threshold=long_jump_threshold
             )
         )
-
         long_jumps_after_ga = (
             count_long_jumps_from_options(
                 ga_options,
                 threshold=long_jump_threshold
             )
         )
-
         long_jumps_after_final = (
             count_long_jumps_from_options(
                 final_options,
                 threshold=long_jump_threshold
             )
         )
-
         print("\n" + "=" * 60)
         print("DP-AWARE PATH OPTIMIZATION EVALUATION")
         print("=" * 60)
-
         print("\n1. Objective cost")
         print(f"Initial route      : {initial_dp_cost:.6f}")
         print(f"After GA           : {ga_dp_cost:.6f}")
@@ -1694,7 +1482,6 @@ def optimize_paths_advanced(
             "Final reduction   : "
             f"{percentage_reduction(initial_dp_cost, final_dp_cost):.2f}%"
         )
-
         print("\n2. Total air-move distance")
         print(f"Initial route      : {air_distance_before:.3f} mm")
         print(f"After GA           : {air_distance_after_ga:.3f} mm")
@@ -1703,7 +1490,6 @@ def optimize_paths_advanced(
             "Final reduction   : "
             f"{percentage_reduction(air_distance_before, air_distance_after_final):.2f}%"
         )
-
         print("\n3. Estimated air-move time")
         print(f"Initial route      : {air_time_before:.3f} seconds")
         print(f"After GA           : {air_time_after_ga:.3f} seconds")
@@ -1712,16 +1498,13 @@ def optimize_paths_advanced(
             "Final reduction   : "
             f"{percentage_reduction(air_time_before, air_time_after_final):.2f}%"
         )
-
         print(
             f"\n4. Long jumps greater than "
             f"{long_jump_threshold:.1f} mm"
         )
-
         print(f"Initial route      : {long_jumps_before}")
         print(f"After GA           : {long_jumps_after_ga}")
         print(f"After 2-Opt++      : {long_jumps_after_final}")
-
         if long_jumps_before > 0:
             print(
                 "Final reduction   : "
@@ -1729,7 +1512,6 @@ def optimize_paths_advanced(
             )
 
         print("=" * 60)
-
         if make_plot:
             plt.figure(figsize=(9, 6))
             plt.plot(ga_history)
@@ -1752,11 +1534,6 @@ def optimize_paths_advanced(
     return final_route, optimized_paths
 
 
-# ============================================================
-# Standalone use (python pathOptimizstion.py) -- same behavior
-# as the original script: reads engine.pathOffset.offset_paths,
-# runs everything, shows the plot.
-# ============================================================
 if __name__ == "__main__":
     from engine import pathOffset as offset
 

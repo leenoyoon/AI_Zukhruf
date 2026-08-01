@@ -1,9 +1,7 @@
 import os
 import sys
 import cv2
-
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine"))
-
 from config import Config
 from engine.preprocessing_stage import run_stage1
 from engine.groove_offsetting import print_offset_report
@@ -12,14 +10,8 @@ from engine.tool_coverage_advisor import (
     regenerate_with_suggested_tool,
 )
 from engine.pathOptimizstion import optimize_paths_advanced
-
-# -- مأخوذتين من الملف الأول (فرح): توليد G-code المتحقّق من مدخلات
-#    المستخدم + معاينة المحاكاة HTML، بدل write_gcode البسيطة --
-# تحديث: صرنا نستخدم النسخة اللي بترجع تقرير تحليلي (with_report) مع
-# print_gcode_report لعرضه، بدل النسخة اللي بترجع نص G-code بس.
 from engine.generate_Gcode import generate_gcode_from_user_input_with_report, print_gcode_report
 from engine.simulate import generate_gcode_simulation_html
-
 
 def process_image_to_gcode(
     image_path,
@@ -34,16 +26,14 @@ def process_image_to_gcode(
     plunge_rate=300.0,
     spindle_speed=12000,
     safe_z=5.0,
-    machine_hourly_rate=20,  # اختياري: بيفعّل تقدير التكلفة (Cost) بالتقرير
+    machine_hourly_rate=20,  
 ):
     print(f"--- Processing: {os.path.basename(image_path)} ---")
-
     image = cv2.imread(image_path)
     if image is None:
         print("Error: Image not found!")
         return
-
-    # Previous stages remain unchanged.
+    
     result, contours, report = run_stage1(
         image,
         wood_width_mm=wood_width_mm,
@@ -52,7 +42,6 @@ def process_image_to_gcode(
     )
 
     cv2.imwrite("check_binary.png", result.binary)
-
     print(
         f"[stage1] total={report.total_found} kept={report.kept} "
         f"dropped_small={report.dropped_too_small} "
@@ -63,7 +52,7 @@ def process_image_to_gcode(
     for note in result.scale_notes:
         print("[stage1/scale]", note)
 
-    # -------- Adaptive offset stage (سارة) -- ما تغيّر ولا سطر هون --------
+    
     advice = generate_with_coverage_advice(
         binary=result.binary,
         pixel_to_mm=result.pixel_to_mm,
@@ -91,21 +80,12 @@ def process_image_to_gcode(
     if not offset_paths:
         print("[offset/error] No machinable paths were generated. Use a smaller tool.")
         return
+    
+    _final_route, ordered = optimize_paths_advanced(
+        offset_paths,
+        pixel_to_mm=result.pixel_to_mm,
+    )
 
-    # -------- Simplify + Optimize (advanced: DP + GA + 2-Opt++) --------
-    # NOTE: optimize_paths_advanced() simplifies internally (epsilon_mm=0.15),
-    # exactly like the original pathOptimizstion.py script did -- pass it the
-    # RAW offset_paths here, not an already-simplified list, or it gets
-    # simplified twice.
-    _final_route, ordered = optimize_paths_advanced(offset_paths)
-
-    # -------- G-code + Simulation (فرح) -- هون التبديل --------
-    # tool_diameter_mm/stepover_mm بينمرروا للتقرير عشان يشتغل عليهم Peak MRR
-    # وتقدير حجم المادة المُزالة، باستخدام used_tool_mm (الأداة المستخدمة
-    # فعلياً بعد أي تبديل فوق، مش tool_dia_mm الأصلية المطلوبة). stepover_mm
-    # بيعكس المسافة الحقيقية بين المسارات المتجاورة عشان تقدير الحجم ما
-    # ينضخم لمسارات التفريغ/offset-fill متل هاي (راجعي
-    # generate_Gcode._estimate_material_removal لتفاصيل السبب).
     user_settings = {
         "safe_z": safe_z,
         "cut_depth": depth,
@@ -141,7 +121,7 @@ def process_image_to_gcode(
 
 
 if __name__ == "__main__":
-    input_image = os.path.join(Config.INPUT_DIR, "pattern2.jpg")
+    input_image = os.path.join(Config.INPUT_DIR, "pattern14.jpg")
     output_gcode = os.path.join(Config.OUTPUT_DIR, "final_zukhruf25.gcode")
 
     process_image_to_gcode(
