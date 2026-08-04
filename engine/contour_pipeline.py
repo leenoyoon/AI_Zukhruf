@@ -295,6 +295,276 @@ def simplify_contour(
     return Contour(out_pts, contour.closed, contour.is_hole, contour.contour_id, out_meta), report
 
 
+# 4b. Tag-aware simplification (straight segments -> collapse to 2 points,
+#     curve/corner segments -> left essentially untouched so G2/G3 fitting
+#     downstream still has the real point cloud to work with)
+def _split_into_runs(tags: List[Any]) -> List[Tuple[int, int, Any]]:
+    """Return (start_idx, end_idx_inclusive, tag) for each run of consecutive
+    equal tags."""
+    runs: List[Tuple[int, int, Any]] = []
+    n = len(tags)
+    if n == 0:
+        return runs
+    start = 0
+    for i in range(1, n):
+        if tags[i] != tags[start]:
+            runs.append((start, i - 1, tags[start]))
+            start = i
+    runs.append((start, n - 1, tags[start]))
+    return runs
+
+
+def _rotate_to_run_boundary(
+    points: List[Point], tags: List[Any]
+) -> Tuple[List[Point], List[Any]]:
+    """Rotate a closed ring so index 0 sits exactly on a tag change. This
+    avoids a run wrapping around the array seam and being split in two by
+    mistake. If every point has the same tag, returns the input unchanged."""
+    n = len(tags)
+    if n < 2:
+        return points, tags
+    start = None
+    for i in range(n):
+        if tags[i] != tags[i - 1]:  # tags[-1] wraps to the last element, as intended
+            start = i
+            break
+    if start is None or start == 0:
+        return points, tags
+    return points[start:] + points[:start], tags[start:] + tags[:start]
+
+def merge_straight_runs(points, runs,
+                        max_bridge_points=2,
+                        line_tol=0.05):
+    """
+    Merge:
+
+        Straight
+        tiny Curve
+        Straight
+
+    if both straight runs belong to the same line.
+    """
+
+    import numpy as np
+
+    merged = []
+
+    i = 0
+
+    while i < len(runs):
+
+        if i + 2 < len(runs):
+
+            s1, e1, t1 = runs[i]
+            s2, e2, t2 = runs[i+1]
+            s3, e3, t3 = runs[i+2]
+
+            if (
+                t1 == "straight"
+                and t2 == "curve"
+                and t3 == "straight"
+                and (e2 - s2 + 1) <= max_bridge_points
+            ):
+
+                p0 = np.array(points[s1])
+                p1 = np.array(points[e3])
+
+                d = p1 - p0
+
+                L = np.linalg.norm(d)
+
+                if L > 1e-9:
+
+                    d /= L
+
+                    ok = True
+
+                    for k in range(s1, e3 + 1):
+
+                        p = np.array(points[k])
+
+                        proj = p0 + np.dot(p - p0, d) * d
+
+                        err = np.linalg.norm(p - proj)
+
+                        if err > line_tol:
+
+                            ok = False
+
+                            break
+
+                    if ok:
+
+                        merged.append((s1, e3, "straight"))
+
+                        i += 3
+
+                        continue
+
+        merged.append(runs[i])
+
+        i += 1
+
+    return merged
+
+
+
+def simplify_points_by_tags(
+    points: List[Point],
+    tags: List[Any],
+    curve_epsilon_px: float = 1e-6,
+) -> Tuple[List[Point], List[Any]]:
+    """
+    - "straight" runs are collapsed to just their first and last point
+      (exactly 2 points), full stop -- no epsilon involved.
+    - any other tag ("curve", "corner", ...) is left as-is, aside from a
+      near-zero-epsilon DPHull pass that only removes truly redundant
+      (near-duplicate) points, so arcs stay intact for later G2/G3 fitting.
+    """
+    n = len(points)
+    if n < 3:
+        return list(points), list(tags)
+
+    runs = _split_into_runs(tags)
+
+    runs = merge_straight_runs(points, runs)
+
+
+    print(f"Runs: {runs}")
+
+    
+    out_pts: List[Point] = []
+    out_tags: List[Any] = []
+
+    for start, end, tag in runs:
+        run_pts = points[start:end + 1]
+
+        if len(run_pts) <= 2:
+            seg_out = run_pts
+        elif tag == "straight":
+            seg_out = [run_pts[0], run_pts[-1]]
+        else:
+            seg_out = DPHull(run_pts, curve_epsilon_px).run()
+
+        if out_pts and seg_out and out_pts[-1] == seg_out[0]:
+            seg_out = seg_out[1:]
+
+        out_pts.extend(seg_out)
+        out_tags.extend([tag] * len(seg_out))
+
+
+    for start, end, tag in runs:
+        if tag == "straight":
+            print(
+                f"Straight run: {start}-{end}, "
+                f"length={end-start+1}"
+            )
+            
+    return out_pts, out_tags
+
+
+def simplify_contour_by_tags(
+    contour: Contour,
+    curve_epsilon_mm: float,
+    pixels_per_mm: float = 1.0,
+    min_segment_mm: float = 0.02,
+    validate: bool = True,
+) -> Tuple[Contour, SimplifyReport]:
+    """Same contract as simplify_contour(), but uses per-point tags
+    (contour.metadata, e.g. from classify_points_straight_curve_corner) to
+    drive simplification instead of a single global epsilon:
+      - "straight" runs -> forced down to their 2 endpoints
+      - everything else -> left alone (near-zero epsilon cleanup only)
+    Falls back to plain simplify_contour() if tags are missing/mismatched.
+    """
+    notes: List[str] = []
+    n_in = len(contour.points)
+
+    if contour.metadata is None or len(contour.metadata) != n_in:
+        notes.append("no per-point tags on this contour; falling back to plain DPHull")
+        return simplify_contour(
+            contour, epsilon_mm=curve_epsilon_mm, pixels_per_mm=pixels_per_mm,
+            min_segment_mm=min_segment_mm, validate=validate,
+        )
+
+    curve_epsilon_px = curve_epsilon_mm * pixels_per_mm
+    min_seg_px = min_segment_mm * pixels_per_mm
+
+    pts, meta, dropped = dedupe_points(
+        contour.points, contour.closed, min_seg_px, contour.metadata
+    )
+    if dropped:
+        notes.append(f"dropped {dropped} near-duplicate point(s) (< {min_segment_mm} mm apart)")
+
+    if len(pts) < (3 if contour.closed else 2):
+        notes.append("too few points after cleanup; returning as-is")
+        report = SimplifyReport(contour.contour_id, n_in, len(pts), dropped,
+                                 False, False, True, notes)
+        return Contour(pts, contour.closed, contour.is_hole, contour.contour_id, meta), report
+
+    intersects_before = has_self_intersections(pts, contour.closed) if validate else False
+    if intersects_before:
+        notes.append(
+            "input contour is self-intersecting (likely a Path-Offsetting "
+            "artifact at a sharp corner) -- simplifying anyway, but flag "
+            "this contour for review; consider fixing the offset join type"
+        )
+
+    if contour.closed:
+        pts_r, tags_r = _rotate_to_run_boundary(pts, meta)
+    else:
+        pts_r, tags_r = pts, meta
+
+    try:
+        out_pts, out_tags = simplify_points_by_tags(pts_r, tags_r, curve_epsilon_px)
+    except Exception as exc:
+        notes.append(f"tag-aware simplification failed ({exc!r}); falling back to cleaned-up original")
+        report = SimplifyReport(contour.contour_id, n_in, len(pts), dropped,
+                                 intersects_before, intersects_before, True, notes)
+        return Contour(pts, contour.closed, contour.is_hole, contour.contour_id, meta), report
+
+    intersects_after = has_self_intersections(out_pts, contour.closed) if validate else False
+    fell_back = False
+    if intersects_after and not intersects_before:
+        notes.append(
+            "tag-aware simplification introduced a self-intersection that "
+            "wasn't in the input -- discarding it and keeping the "
+            "cleaned-up original for this contour"
+        )
+        out_pts, out_tags = pts, meta
+        fell_back = True
+
+    report = SimplifyReport(
+        contour_id=contour.contour_id,
+        input_points=n_in,
+        output_points=len(out_pts),
+        dropped_near_duplicates=dropped,
+        had_self_intersections_before=intersects_before,
+        had_self_intersections_after=intersects_after,
+        fell_back_to_original=fell_back,
+        notes=notes,
+    )
+    return Contour(out_pts, contour.closed, contour.is_hole, contour.contour_id, out_tags), report
+
+
+def simplify_pipeline_by_tags(
+    contours: Sequence[Contour],
+    curve_epsilon_mm: float,
+    pixels_per_mm: float = 1.0,
+    min_segment_mm: float = 0.02,
+    validate: bool = True,
+) -> Tuple[List[Contour], List[SimplifyReport]]:
+    out_contours: List[Contour] = []
+    reports: List[SimplifyReport] = []
+    for c in contours:
+        simplified, report = simplify_contour_by_tags(
+            c, curve_epsilon_mm, pixels_per_mm, min_segment_mm, validate
+        )
+        out_contours.append(simplified)
+        reports.append(report)
+    return out_contours, reports
+
+
 # 5. Batch driver over every contour in an engraving
 def simplify_pipeline(
     contours: Sequence[Contour],

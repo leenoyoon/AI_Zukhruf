@@ -1853,7 +1853,7 @@ def optimize_paths_advanced(
             epsilon_mm = max(0.1, 0.5 * pixel_to_mm)
         else:
             epsilon_mm = 0.15
- 
+
     if verbose:
         print(
             f"[dphull] using epsilon_mm={epsilon_mm:.3f}"
