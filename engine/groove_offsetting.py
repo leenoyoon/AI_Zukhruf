@@ -108,7 +108,7 @@ def generate_groove_offset_paths(
     foreground_pixels = int(np.count_nonzero(mask))
     pixel_area_mm2 = pixel_to_mm * pixel_to_mm
 
-    distance_px = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    distance_px = cv2.distanceTransform(mask, cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
     distance_mm = distance_px * pixel_to_mm
 
     tool_radius_mm = tool_diameter_mm / 2.0

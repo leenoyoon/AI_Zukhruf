@@ -34,7 +34,7 @@ def process_image_to_gcode(
         print("Error: Image not found!")
         return
     
-    result, contours, report = run_stage1(
+    result = run_stage1(
         image,
         wood_width_mm=wood_width_mm,
         wood_height_mm=wood_height_mm,
@@ -42,12 +42,7 @@ def process_image_to_gcode(
     )
 
     cv2.imwrite("check_binary.png", result.binary)
-    print(
-        f"[stage1] total={report.total_found} kept={report.kept} "
-        f"dropped_small={report.dropped_too_small} "
-        f"dropped_bg={report.dropped_as_background} "
-        f"pixel_to_mm={result.pixel_to_mm:.4f}"
-    )
+    print(f"[stage1] pixel_to_mm={result.pixel_to_mm:.4f}")
 
     for note in result.scale_notes:
         print("[stage1/scale]", note)
@@ -121,7 +116,7 @@ def process_image_to_gcode(
 
 
 if __name__ == "__main__":
-    input_image = os.path.join(Config.INPUT_DIR, "pattern14.jpg")
+    input_image = os.path.join(Config.INPUT_DIR, "pattern2.jpg")
     output_gcode = os.path.join(Config.OUTPUT_DIR, "final_zukhruf25.gcode")
 
     process_image_to_gcode(

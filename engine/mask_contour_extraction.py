@@ -38,16 +38,11 @@ def _contours_from_level_mask_subpixel(
     for rc in raw_contours:
         if len(rc) < 3:
             continue
-        pts_px = [(float(x), float(y)) for y, x in rc]  
+        pts_px = [(float(x), float(y)) for y, x in rc]
         arr = np.array(pts_px, dtype=np.float32).reshape(-1, 1, 2)
         perimeter_px = cv2.arcLength(arr, True)
         if perimeter_px < min_length_px:
             continue
-
-        epsilon_mm = max(0.02, 0.6 * pixel_to_mm)
-        epsilon_px = epsilon_mm / pixel_to_mm
-        arr_simplified = cv2.approxPolyDP(arr, epsilon_px, True)
-        pts_px = [(p[0][0], p[0][1]) for p in arr_simplified]
         path = _ensure_closed(
             [(x * pixel_to_mm, y * pixel_to_mm) for x, y in pts_px]
         )
@@ -77,9 +72,6 @@ def _contours_from_level_mask(
         if perimeter_px < min_length_px:
             continue
 
-        epsilon_mm = max(0.02, 0.6 * pixel_to_mm)
-        epsilon_px = epsilon_mm / pixel_to_mm
-        contour = cv2.approxPolyDP(contour, epsilon_px, True)
         points = np.squeeze(contour, axis=1)
         path = _ensure_closed(
             [
