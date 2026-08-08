@@ -41,6 +41,12 @@ def process_image_to_gcode(
         tool_dia_mm=tool_dia_mm,
     )
 
+    # ===== DEBUG CENTERING =====
+    print(f"[centering] offset = ({result.offset_x_mm:.2f}, {result.offset_y_mm:.2f})")
+    print(f"[centering] pixel_to_mm = {result.pixel_to_mm:.4f}")
+    print(f"[centering] pad_px = {result.pad_px}")
+    # ===========================
+
     cv2.imwrite("check_binary.png", result.binary)
     print(f"[stage1] pixel_to_mm={result.pixel_to_mm:.4f}")
 
@@ -76,6 +82,23 @@ def process_image_to_gcode(
         print("[offset/error] No machinable paths were generated. Use a smaller tool.")
         return
     
+    # -- توسيط النقشة
+    if result.offset_x_mm or result.offset_y_mm:
+        print(f"[centering] shifting design by "
+              f"({result.offset_x_mm:.2f}, {result.offset_y_mm:.2f}) mm "
+              f"to center it on the {wood_width_mm}x{wood_height_mm} mm stock")
+        offset_paths = [
+            [(x + result.offset_x_mm, y + result.offset_y_mm) for x, y in path]
+            for path in offset_paths
+        ]
+
+    # ===== DEBUG بعد الإزاحة =====
+    all_x = [p[0] for path in offset_paths for p in path]
+    all_y = [p[1] for path in offset_paths for p in path]
+    print(f"[centering] after shift → X range: {min(all_x):.1f} .. {max(all_x):.1f}")
+    print(f"[centering] after shift → Y range: {min(all_y):.1f} .. {max(all_y):.1f}")
+    # ==============================
+    
     _final_route, ordered = optimize_paths_advanced(
         offset_paths,
         pixel_to_mm=result.pixel_to_mm,
@@ -100,7 +123,12 @@ def process_image_to_gcode(
     gcode_filename = os.path.basename(output_path)
     html_filename = gcode_filename.replace(".gcode", "_preview.html")
     html_simulation_path = os.path.join(Config.SIMULATION_DIR, html_filename)
-    generate_gcode_simulation_html(gcode_content, html_simulation_path)
+    generate_gcode_simulation_html(
+        gcode_content,
+        html_simulation_path,
+        wood_width_mm=wood_width_mm,
+        wood_height_mm=wood_height_mm,
+    )
 
     output_dir = os.path.dirname(output_path)
     if output_dir:

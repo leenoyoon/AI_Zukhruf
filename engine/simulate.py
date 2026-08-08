@@ -70,6 +70,8 @@ def generate_gcode_simulation_html(
     gcode_text,
     output_html_path=DEFAULT_SIM_PATH,
     offline_ready=False,
+    wood_width_mm=None,      # << جديد
+    wood_height_mm=None,     # << جديد
 ):
     """
     Parses G-code text and creates a fast, interactive 3D simulation plot.
@@ -256,7 +258,27 @@ def generate_gcode_simulation_html(
         data.append(start_end_trace)
 
     fig = go.Figure(data=data)
+    # ===== رسم إطار قطعة الخشب =====
+    if wood_width_mm is not None and wood_height_mm is not None:
+        # مستطيل على مستوى Z=0 (سطح الخشب)
+        stock_x = [0, wood_width_mm, wood_width_mm, 0, 0]
+        stock_y = [0, 0, wood_height_mm, wood_height_mm, 0]
+        stock_z = [0, 0, 0, 0, 0]
 
+        stock_trace = go.Scatter3d(
+            x=stock_x,
+            y=stock_y,
+            z=stock_z,
+            mode="lines",
+            name="Stock",
+            line=dict(color="rgba(120,120,120,0.7)", width=6, dash="dash"),
+            hoverinfo="skip",
+        )
+        data.append(stock_trace)
+
+        # نعيد بناء الـ Figure بعد إضافة الإطار
+        fig = go.Figure(data=data)
+    # ================================
     fig.update_layout(
         showlegend=False,
         title="CNC Toolpath 3D Simulation",

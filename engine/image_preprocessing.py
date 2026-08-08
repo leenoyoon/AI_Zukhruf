@@ -10,6 +10,8 @@ class PreprocessResult:
     pixel_to_mm: float
     pad_px: int
     scale_notes: List[str]
+    offset_x_mm: float = 0.0   
+    offset_y_mm: float = 0.0   
 
 
 def merge_composite_layers(
@@ -137,7 +139,7 @@ def estimate_adaptive_upscale_factor(
         f"target≤{target_px_mm:.3f} → min_factor={physical_min}"
     )
 
-    # Optional boost from corner density (above the physical minimum only)
+    
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     corners_mean = np.mean([gray[0, 0], gray[0, -1], gray[-1, 0], gray[-1, -1]])
@@ -262,7 +264,7 @@ def clean_binary(binary: np.ndarray, kernel_size: int) -> np.ndarray:
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
     closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
     opened = cv2.morphologyEx(closed, cv2.MORPH_OPEN, kernel)
-    return opened          # بدون GaussianBlur
+    return opened          
 
 
 def detect_uneven_lighting(gray: np.ndarray, tile_grid: int = 4) -> bool:
@@ -340,8 +342,39 @@ def preprocess_pipeline(
             interpolation=cv2.INTER_CUBIC,
         )
 
-    pixel_to_mm, scale_notes = compute_pixel_to_mm(
-        image_bgr.shape[:2], wood_width_mm, wood_height_mm, tool_dia_mm, fit_mode
+    
+    img_h, img_w = image_bgr.shape[:2]
+
+    
+    pixel_to_mm = min(wood_width_mm / img_w, wood_height_mm / img_h) if fit_mode == "contain" else max(wood_width_mm / img_w, wood_height_mm / img_h)
+
+    for _ in range(6):  
+        tool_dia_px = tool_dia_mm / pixel_to_mm
+        pad_px = max(2, int(np.ceil(tool_dia_px / 2.0 * 1.5)))
+        padded_w = img_w + 2 * pad_px
+        padded_h = img_h + 2 * pad_px
+
+        scale_x = wood_width_mm / padded_w
+        scale_y = wood_height_mm / padded_h
+        new_pixel_to_mm = min(scale_x, scale_y) if fit_mode == "contain" else max(scale_x, scale_y)
+
+        if abs(new_pixel_to_mm - pixel_to_mm) < 1e-7:
+            break
+        pixel_to_mm = new_pixel_to_mm
+
+    
+    scale_notes = []
+    if abs((wood_width_mm / img_w) - (wood_height_mm / img_h)) / max(wood_width_mm / img_w, wood_height_mm / img_h) > 0.02:
+        scale_notes.append(
+            f"Image aspect ratio ({img_w}x{img_h}) does not match wood aspect ratio "
+            f"({wood_width_mm}x{wood_height_mm} mm) -- using {fit_mode}; "
+            f"unused margin or unused stock may remain."
+        )
+    min_feature_px = tool_dia_mm / pixel_to_mm
+    scale_notes.append(
+        f"Smallest meaningful feature ≈ {min_feature_px:.1f} px "
+        f"(= tool diameter {tool_dia_mm} mm at current scale). "
+        f"Smaller details should be merged/removed in morphological cleaning."
     )
     notes.extend(scale_notes)
 
@@ -382,10 +415,28 @@ def preprocess_pipeline(
         notes.append(
             f"Warning: white pixel ratio is very high ({foreground_ratio:.4%})."
         )
+    
+    padded_h, padded_w = padded_bgr.shape[:2]
+    design_width_mm = padded_w * pixel_to_mm
+    design_height_mm = padded_h * pixel_to_mm
+
+    offset_x_mm = (wood_width_mm - design_width_mm) / 2.0
+    offset_y_mm = (wood_height_mm - design_height_mm) / 2.0
+
+    if offset_x_mm < 0 or offset_y_mm < 0:
+        notes.append(
+            f"Warning: design ({design_width_mm:.1f}x{design_height_mm:.1f} mm) "
+            f"is larger than the wood blank ({wood_width_mm}x{wood_height_mm} mm) in at least "
+            f"one direction -- full centering is not possible, it will be placed at the edge."
+        )
+        offset_x_mm = max(0.0, offset_x_mm)
+        offset_y_mm = max(0.0, offset_y_mm)
 
     return PreprocessResult(
         binary=binary,
         pixel_to_mm=pixel_to_mm,
         pad_px=pad_px,
         scale_notes=notes,
+        offset_x_mm=offset_x_mm,
+        offset_y_mm=offset_y_mm,
     )
