@@ -339,41 +339,178 @@ def arc_direction(p_start, p_mid, p_end):
     return "G2" if cross < 0 else "G3"
  
  
-def fit_arc_to_curved_segment(curved_segment, max_arc_error=0.15):
+def fit_arc_to_curved_segment(
+    curved_segment,
+    max_arc_error=0.15,
+    min_arc_points=6,
+):
+    """
+    Fit an arc only when the curved segment provides enough
+    geometric evidence that it is genuinely circular.
+
+    Important:
+    Three points are ALWAYS enough to define a circle, but that
+    does NOT mean the original curve is circular.
+
+    Therefore we require:
+      1. enough points
+      2. low circle fitting error
+      3. consistent turning direction
+      4. meaningful angular sweep
+    """
+
     points = curved_segment["points"]
- 
-    if len(points) < 3:
+
+    if len(points) < min_arc_points:
         return None
- 
+
     start = points[0]
     mid = points[len(points) // 2]
     end = points[-1]
- 
-    circle = circle_from_3_points(start, mid, end)
- 
+
+    # ------------------------------------------------------------
+    # Fit candidate circle
+    # ------------------------------------------------------------
+
+    circle = circle_from_3_points(
+        start,
+        mid,
+        end
+    )
+
     if circle is None:
         return None
- 
+
+    # ------------------------------------------------------------
+    # Check radial error
+    # ------------------------------------------------------------
+
     max_error = max(
-        point_circle_error(point, circle)
+        point_circle_error(
+            point,
+            circle
+        )
         for point in points
     )
- 
+
     if max_error > max_arc_error:
         return None
- 
+
+    # ------------------------------------------------------------
+    # Check turning-direction consistency.
+    #
+    # A real arc should keep turning in the same direction.
+    #
+    # Complex ornament:
+    #
+    #       + + - + - -
+    #
+    # is NOT a single arc.
+    # ------------------------------------------------------------
+
+    turn_signs = []
+
+    for i in range(1, len(points) - 1):
+
+        p0 = points[i - 1]
+        p1 = points[i]
+        p2 = points[i + 1]
+
+        v1 = (
+            p1[0] - p0[0],
+            p1[1] - p0[1],
+        )
+
+        v2 = (
+            p2[0] - p1[0],
+            p2[1] - p1[1],
+        )
+
+        cross = (
+            v1[0] * v2[1]
+            - v1[1] * v2[0]
+        )
+
+        if abs(cross) < 1e-9:
+            continue
+
+        turn_signs.append(
+            1 if cross > 0 else -1
+        )
+
+    if len(turn_signs) < 3:
+        return None
+
+    positive = sum(
+        1 for s in turn_signs if s > 0
+    )
+
+    negative = sum(
+        1 for s in turn_signs if s < 0
+    )
+
+    dominant = max(
+        positive,
+        negative
+    )
+
+    consistency = (
+        dominant / len(turn_signs)
+    )
+
+    # A genuine arc should have strongly consistent turning.
+    if consistency < 0.90:
+        return None
+
+    # ------------------------------------------------------------
+    # Check that the arc is not almost a straight line.
+    # ------------------------------------------------------------
+
+    first = points[0]
+    last = points[-1]
+
+    chord = hypot(
+        last[0] - first[0],
+        last[1] - first[1],
+    )
+
+    radius = circle[2]
+
+    if radius < 1e-9:
+        return None
+
+    # If radius is enormous relative to chord, this is effectively
+    # a straight segment, not a useful CNC arc.
+    if radius > max(
+        1000.0,
+        chord * 50.0
+    ):
+        return None
+
+    # ------------------------------------------------------------
+    # Everything passed.
+    # ------------------------------------------------------------
+
     return {
         "type": "arc",
-        "command": arc_direction(start, mid, end),
+        "command": arc_direction(
+            start,
+            mid,
+            end
+        ),
         "start": start,
         "end": end,
-        "center": (circle[0], circle[1]),
+        "center": (
+            circle[0],
+            circle[1]
+        ),
         "radius": circle[2],
         "points": points,
-        "max_error": max_error
+        "max_error": max_error,
+        "turning_consistency": consistency,
     }
- 
- 
+
+    
 def build_path_representations(
     simplified_offset_paths,
     depth=-2.0,

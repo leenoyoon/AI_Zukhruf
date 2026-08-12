@@ -72,11 +72,26 @@ def process_image_to_gcode(
             f"for better coverage? [y/N]: "
         ).strip().lower()
         if answer.startswith("y"):
-            offset_paths, new_report = regenerate_with_suggested_tool(
-                result.binary, result.pixel_to_mm, advice
+            used_tool_mm = advice.suggested_tool_mm
+            print(f"[coverage] Re-preprocessing with tool {used_tool_mm}mm ...")
+
+            result = run_stage1(
+                image,
+                wood_width_mm=wood_width_mm,
+                wood_height_mm=wood_height_mm,
+                tool_dia_mm=used_tool_mm,
+            )
+            cv2.imwrite("check_binary.png", result.binary)
+            print(f"[stage1] pixel_to_mm={result.pixel_to_mm:.4f} (after tool switch)")
+
+            from engine.groove_offsetting import generate_groove_offset_paths
+            offset_paths, new_report = generate_groove_offset_paths(
+                result.binary,
+                result.pixel_to_mm,
+                used_tool_mm,
+                step_over_ratio=step_over_ratio,
             )
             print_offset_report(new_report)
-            used_tool_mm = advice.suggested_tool_mm
 
     if not offset_paths:
         print("[offset/error] No machinable paths were generated. Use a smaller tool.")
@@ -144,7 +159,7 @@ def process_image_to_gcode(
 
 
 if __name__ == "__main__":
-    input_image = os.path.join(Config.INPUT_DIR, "pattern2.jpg")
+    input_image = os.path.join(Config.INPUT_DIR, "pattern16.jpg")
     output_gcode = os.path.join(Config.OUTPUT_DIR, "final_zukhruf25.gcode")
 
     process_image_to_gcode(
