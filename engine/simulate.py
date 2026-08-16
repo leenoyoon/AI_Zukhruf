@@ -287,6 +287,7 @@ def generate_gcode_simulation_html(
             yaxis_title="Y (mm)",
             zaxis_title="Z (mm)",
             aspectmode="data",
+            yaxis=dict(autorange="reversed"),
         ),
         margin=dict(l=0, r=0, b=0, t=40),
     )

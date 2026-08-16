@@ -159,7 +159,7 @@ def process_image_to_gcode(
 
 
 if __name__ == "__main__":
-    input_image = os.path.join(Config.INPUT_DIR, "pattern16.jpg")
+    input_image = os.path.join(Config.INPUT_DIR, "fafy.jpg")
     output_gcode = os.path.join(Config.OUTPUT_DIR, "final_zukhruf25.gcode")
 
     process_image_to_gcode(
