@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import cv2
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine"))
 from config import Config
@@ -28,6 +29,8 @@ def process_image_to_gcode(
     safe_z=5.0,
     machine_hourly_rate=20,  
 ):
+    pipeline_start_perf = time.perf_counter()  # full pipeline clock: image load -> G-code
+
     print(f"--- Processing: {os.path.basename(image_path)} ---")
     image = cv2.imread(image_path)
     if image is None:
@@ -133,6 +136,7 @@ def process_image_to_gcode(
     gcode_content, report = generate_gcode_from_user_input_with_report(
         optimized_paths=ordered,
         user_settings=user_settings,
+        pipeline_start_perf=pipeline_start_perf,
     )
 
     gcode_filename = os.path.basename(output_path)
@@ -159,7 +163,7 @@ def process_image_to_gcode(
 
 
 if __name__ == "__main__":
-    input_image = os.path.join(Config.INPUT_DIR, "fafy.jpg")
+    input_image = os.path.join(Config.INPUT_DIR, "pattern14.jpg")
     output_gcode = os.path.join(Config.OUTPUT_DIR, "final_zukhruf25.gcode")
 
     process_image_to_gcode(

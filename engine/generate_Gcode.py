@@ -267,7 +267,7 @@ def _build_report_comment_block(report):
     lines = [
         "(--------------------------------------------------)",
         "( Evaluation Summary / Analytics Report            )",
-        f"( Generation Time: {report['execution_time_ms']:.2f} ms                        )",
+        f"( Generation Time: {report['execution_time_ms']:.2f} s                          )",
         f"( Paths: {report['paths']['processed']}/{report['paths']['input']} processed | "
         f"Points: {report['points']['valid']}/{report['points']['input']} valid )",
         f"( Segments: {report['segments']['linear']} linear (G1) | "
@@ -301,12 +301,21 @@ def _generate_gcode_core(
     safe_z, retract_z, cut_depth, step_down,
     feed_rate, plunge_rate, spindle_speed,
     rapid_speed, tool_diameter_mm, stepover_mm, machine_hourly_rate,
+    pipeline_start_perf=None,
 ):
     """
     Does the actual G-code generation AND analytics in a single pass, and
     always returns (gcode_text, report). Public callers should use
     generate_gcode() or generate_gcode_with_report() instead of calling this
     directly -- this function assumes its numeric inputs are already sanitized.
+
+    pipeline_start_perf: optional time.perf_counter() timestamp captured by the
+        caller at the very start of the FULL pipeline (image load -> preprocessing
+        -> offsetting -> optimization -> this stage). When provided, "execution_time_ms"
+        in the report measures END-TO-END elapsed time from that timestamp instead of
+        just this G-code generation stage. When omitted (the default), "execution_time_ms"
+        falls back to measuring only this stage, exactly as before this change -- so
+        any caller that doesn't pass it sees identical behavior.
     """
     start_time = time.perf_counter()
     dwell_seconds = 2.0  # matches the fixed "G4 P2" spindle warm-up below
@@ -354,11 +363,11 @@ def _generate_gcode_core(
             "M30",
         ]
 
-        exec_ms = (time.perf_counter() - start_time) * 1000
+        exec_seconds = time.perf_counter() - (pipeline_start_perf or start_time)
         mt = _estimate_machining_time(stats, feed_rate, plunge_rate, rapid_speed, dwell_seconds)
 
         report = {
-            "execution_time_ms": round(exec_ms, 3),
+            "execution_time_ms": round(exec_seconds, 3),
             "paths": {
                 "input": total_paths,
                 "processed": processed_count,
@@ -399,7 +408,7 @@ def _generate_gcode_core(
         report["total_gcode_lines"] = len(final_text.splitlines())
 
         logging.info(
-            f"G-code generated successfully in {report['execution_time_ms']:.2f} ms. "
+            f"G-code generated successfully in {report['execution_time_ms']:.2f} s. "
             f"Processed paths: {processed_count}/{total_paths}"
         )
         return final_text, report
@@ -577,13 +586,18 @@ def generate_gcode_with_report(
     safe_z=5.0, retract_z=1.0, cut_depth=-3.0, step_down=1.0,
     feed_rate=800, plunge_rate=300, spindle_speed=12000, rapid_speed=3000.0,
     tool_diameter_mm=None, stepover_mm=None, machine_hourly_rate=None,
+    pipeline_start_perf=None,
 ):
     """Returns (gcode_text, report_dict). Prefer this over a return_report=True flag
-    since the return shape is explicit from the function name, not from an argument."""
+    since the return shape is explicit from the function name, not from an argument.
+
+    pipeline_start_perf: see _generate_gcode_core docstring. Optional -- omitting it
+    keeps this function's behavior exactly as before."""
     params = _sanitize_core_params(safe_z, retract_z, cut_depth, step_down,
                                     feed_rate, plunge_rate, spindle_speed, rapid_speed)
     return _generate_gcode_core(
-        optimized_paths, *params, tool_diameter_mm, stepover_mm, machine_hourly_rate
+        optimized_paths, *params, tool_diameter_mm, stepover_mm, machine_hourly_rate,
+        pipeline_start_perf=pipeline_start_perf,
     )
 
 
@@ -632,10 +646,21 @@ def generate_gcode_from_user_input(optimized_paths, user_settings: dict = None):
     return generate_gcode(optimized_paths, **_resolve_user_settings(user_settings))
 
 
-def generate_gcode_from_user_input_with_report(optimized_paths, user_settings: dict = None):
+def generate_gcode_from_user_input_with_report(
+    optimized_paths, user_settings: dict = None, pipeline_start_perf=None
+):
     """UI-facing wrapper: (text, report). Prefer this over generate_gcode_from_user_input()
-    whenever the caller also needs the analytics report."""
-    return generate_gcode_with_report(optimized_paths, **_resolve_user_settings(user_settings))
+    whenever the caller also needs the analytics report.
+
+    pipeline_start_perf is kept as its own argument (not part of user_settings) since
+    user_settings goes through numeric sanitization/clamping -- a perf_counter()
+    timestamp doesn't belong there. Optional -- omitting it keeps this function's
+    behavior exactly as before."""
+    return generate_gcode_with_report(
+        optimized_paths,
+        pipeline_start_perf=pipeline_start_perf,
+        **_resolve_user_settings(user_settings),
+    )
 
 
 def print_gcode_report(report: dict):
@@ -643,7 +668,7 @@ def print_gcode_report(report: dict):
     print("           G-CODE ENGINE ANALYTICS REPORT           ")
     print("=" * 55)
 
-    print(f"\n⏱️  Execution Time: {report.get('execution_time_ms', 0)} ms")
+    print(f"\n⏱️  Execution Time: {report.get('execution_time_ms', 0)} s")
     if "total_gcode_lines" in report:
         print(f"📄 Total Lines Generated: {report['total_gcode_lines']}")
 
