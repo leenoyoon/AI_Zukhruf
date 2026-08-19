@@ -1,8 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Any, Sequence
-
 from dphull import DPHull, Point, cross
-
 import math
 
 @dataclass
@@ -12,7 +10,6 @@ class Contour:
     is_hole: bool = False
     contour_id: Any = None
     metadata: Optional[List[Any]] = None
-
 
 @dataclass
 class SimplifyReport:
@@ -25,22 +22,13 @@ class SimplifyReport:
     fell_back_to_original: bool
     notes: List[str] = field(default_factory=list)
 
-
-# 6. Near-duplicate
-def dedupe_points(
-    points: List[Point],
-    closed: bool,
-    min_dist: float,
-    metadata: Optional[List[Any]] = None,
-) -> Tuple[List[Point], Optional[List[Any]], int]:
+def dedupe_points(points: List[Point], closed: bool, min_dist: float, metadata: Optional[List[Any]]=None) -> Tuple[List[Point], Optional[List[Any]], int]:
     if not points:
-        return points, metadata, 0
-
+        return (points, metadata, 0)
     min_dist_sq = min_dist * min_dist
     out_pts = [points[0]]
     out_meta = [metadata[0]] if metadata is not None else None
     dropped = 0
-
     for idx in range(1, len(points)):
         px, py = points[idx]
         lx, ly = out_pts[-1]
@@ -50,7 +38,6 @@ def dedupe_points(
         out_pts.append(points[idx])
         if out_meta is not None:
             out_meta.append(metadata[idx])
-
     if closed and len(out_pts) > 1:
         px, py = out_pts[0]
         lx, ly = out_pts[-1]
@@ -59,28 +46,20 @@ def dedupe_points(
             if out_meta is not None:
                 out_meta.pop()
             dropped += 1
+    return (out_pts, out_meta, dropped)
 
-    return out_pts, out_meta, dropped
-
-
-# 2. Self-intersection
 def _orient(a: Point, b: Point, c: Point) -> float:
     return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 
-
 def _on_segment(a: Point, b: Point, p: Point) -> bool:
-    return (min(a[0], b[0]) - 1e-12 <= p[0] <= max(a[0], b[0]) + 1e-12 and
-            min(a[1], b[1]) - 1e-12 <= p[1] <= max(a[1], b[1]) + 1e-12)
-
+    return min(a[0], b[0]) - 1e-12 <= p[0] <= max(a[0], b[0]) + 1e-12 and min(a[1], b[1]) - 1e-12 <= p[1] <= max(a[1], b[1]) + 1e-12
 
 def _segments_intersect(p1: Point, p2: Point, p3: Point, p4: Point) -> bool:
     d1 = _orient(p3, p4, p1)
     d2 = _orient(p3, p4, p2)
     d3 = _orient(p1, p2, p3)
     d4 = _orient(p1, p2, p4)
-
-    if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
-       ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
+    if (d1 > 0 and d2 < 0 or (d1 < 0 and d2 > 0)) and (d3 > 0 and d4 < 0 or (d3 < 0 and d4 > 0)):
         return True
     if d1 == 0 and _on_segment(p3, p4, p1):
         return True
@@ -91,20 +70,16 @@ def _segments_intersect(p1: Point, p2: Point, p3: Point, p4: Point) -> bool:
     if d4 == 0 and _on_segment(p1, p2, p4):
         return True
     return False
-
-
 try:
     from shapely.geometry import LinearRing, LineString
     _HAVE_SHAPELY = True
 except ImportError:
     _HAVE_SHAPELY = False
 
-
 def _has_self_intersections_bruteforce(points: List[Point], closed: bool) -> bool:
     n = len(points)
     if n < 4:
         return False
-
     edges = [(i, (i + 1) % n) for i in range(n - (0 if closed else 1))]
     m = len(edges)
     for a in range(m):
@@ -117,24 +92,18 @@ def _has_self_intersections_bruteforce(points: List[Point], closed: bool) -> boo
                 return True
     return False
 
-
 def has_self_intersections(points: List[Point], closed: bool) -> bool:
     n = len(points)
     if n < 4:
         return False
-
     if _HAVE_SHAPELY:
         try:
             geom = LinearRing(points) if closed else LineString(points)
             return not geom.is_simple
         except Exception:
             pass
-
     return _has_self_intersections_bruteforce(points, closed)
 
-
-
-# 1. Closed-contour support
 def _convex_hull_indices(points: List[Point]) -> List[int]:
     n = len(points)
     if n < 3:
@@ -143,7 +112,6 @@ def _convex_hull_indices(points: List[Point]) -> List[int]:
 
     def turn(o: int, a: int, b: int) -> float:
         return cross(points[o], points[a], points[b])
-
     lower: List[int] = []
     for i in order:
         while len(lower) >= 2 and turn(lower[-2], lower[-1], i) <= 0:
@@ -156,14 +124,12 @@ def _convex_hull_indices(points: List[Point]) -> List[int]:
         upper.append(i)
     return lower[:-1] + upper[:-1]
 
-
 def _farthest_pair(points: List[Point]) -> Tuple[int, int]:
     n = len(points)
     if n <= 1:
         return (0, 0)
     if n == 2:
         return (0, 1)
-
     hull = _convex_hull_indices(points)
     h = len(hull)
     if h < 3:
@@ -173,7 +139,6 @@ def _farthest_pair(points: List[Point]) -> Tuple[int, int]:
         dx = points[i][0] - points[j][0]
         dy = points[i][1] - points[j][1]
         return dx * dx + dy * dy
-
     best_d = -1.0
     best = (hull[0], hull[0])
     j = 1
@@ -190,57 +155,34 @@ def _farthest_pair(points: List[Point]) -> Tuple[int, int]:
         for pair in ((hull[i], hull[j]), (hull[ni], hull[j])):
             d = dist_sq(*pair)
             if d > best_d:
-                best_d, best = d, pair
+                best_d, best = (d, pair)
     return best
 
-
-def split_closed_to_open(
-    points: List[Point], i_anchor: int, j_anchor: int
-) -> Tuple[List[Point], List[Point]]:
+def split_closed_to_open(points: List[Point], i_anchor: int, j_anchor: int) -> Tuple[List[Point], List[Point]]:
     n = len(points)
     i, j = sorted((i_anchor, j_anchor))
     chain_a = points[i:j + 1]
     chain_b = points[j:] + points[:i + 1]
-    return chain_a, chain_b
-
+    return (chain_a, chain_b)
 
 def merge_open_chains(simplified_a: List[Point], simplified_b: List[Point]) -> List[Point]:
     return simplified_a[:-1] + simplified_b[:-1]
 
-
-# 4/5/6/7. Full per-contour simplification
-def simplify_contour(
-    contour: Contour,
-    epsilon_mm: float,
-    pixels_per_mm: float = 1.0,
-    min_segment_mm: float = 0.02,
-    validate: bool = True,
-) -> Tuple[Contour, SimplifyReport]:
+def simplify_contour(contour: Contour, epsilon_mm: float, pixels_per_mm: float=1.0, min_segment_mm: float=0.02, validate: bool=True) -> Tuple[Contour, SimplifyReport]:
     notes: List[str] = []
     n_in = len(contour.points)
     epsilon_px = epsilon_mm * pixels_per_mm
     min_seg_px = min_segment_mm * pixels_per_mm
-
-    pts, meta, dropped = dedupe_points(
-        contour.points, contour.closed, min_seg_px, contour.metadata
-    )
+    pts, meta, dropped = dedupe_points(contour.points, contour.closed, min_seg_px, contour.metadata)
     if dropped:
-        notes.append(f"dropped {dropped} near-duplicate point(s) (< {min_segment_mm} mm apart)")
-
+        notes.append(f'dropped {dropped} near-duplicate point(s) (< {min_segment_mm} mm apart)')
     if len(pts) < (3 if contour.closed else 2):
-        notes.append("too few points after cleanup; returning as-is")
-        report = SimplifyReport(contour.contour_id, n_in, len(pts), dropped,
-                                 False, False, True, notes)
-        return Contour(pts, contour.closed, contour.is_hole, contour.contour_id, meta), report
-
+        notes.append('too few points after cleanup; returning as-is')
+        report = SimplifyReport(contour.contour_id, n_in, len(pts), dropped, False, False, True, notes)
+        return (Contour(pts, contour.closed, contour.is_hole, contour.contour_id, meta), report)
     intersects_before = has_self_intersections(pts, contour.closed) if validate else False
     if intersects_before:
-        notes.append(
-            "input contour is self-intersecting (likely a Path-Offsetting "
-            "artifact at a sharp corner) -- simplifying anyway, but flag "
-            "this contour for review; consider fixing the offset join type"
-        )
-
+        notes.append('input contour is self-intersecting (likely a Path-Offsetting artifact at a sharp corner) -- simplifying anyway, but flag this contour for review; consider fixing the offset join type')
     try:
         if contour.closed:
             i_anchor, j_anchor = _farthest_pair(pts)
@@ -248,14 +190,11 @@ def simplify_contour(
             i, j = sorted((i_anchor, j_anchor))
             map_a = list(range(i, j + 1))
             map_b = list(range(j, len(pts))) + list(range(0, i + 1))
-
             idx_a = DPHull(chain_a, epsilon_px).run_indices()
             idx_b = DPHull(chain_b, epsilon_px).run_indices()
-
             simp_a = [chain_a[k] for k in idx_a]
             simp_b = [chain_b[k] for k in idx_b]
             out_pts = merge_open_chains(simp_a, simp_b)
-
             if meta is not None:
                 global_a = [map_a[k] for k in idx_a][:-1]
                 global_b = [map_b[k] for k in idx_b][:-1]
@@ -268,41 +207,19 @@ def simplify_contour(
             out_pts = [pts[k] for k in idx]
             out_meta = [meta[k] for k in idx] if meta is not None else None
     except Exception as exc:
-        notes.append(f"simplification failed ({exc!r}); falling back to cleaned-up original")
-        report = SimplifyReport(contour.contour_id, n_in, len(pts), dropped,
-                                 intersects_before, intersects_before, True, notes)
-        return Contour(pts, contour.closed, contour.is_hole, contour.contour_id, meta), report
-
+        notes.append(f'simplification failed ({exc!r}); falling back to cleaned-up original')
+        report = SimplifyReport(contour.contour_id, n_in, len(pts), dropped, intersects_before, intersects_before, True, notes)
+        return (Contour(pts, contour.closed, contour.is_hole, contour.contour_id, meta), report)
     intersects_after = has_self_intersections(out_pts, contour.closed) if validate else False
     fell_back = False
-    if intersects_after and not intersects_before:
-        notes.append(
-            "simplification introduced a self-intersection that wasn't in "
-            "the input -- discarding the simplified version and keeping "
-            "the cleaned-up original for this contour"
-        )
-        out_pts, out_meta = pts, meta
+    if intersects_after and (not intersects_before):
+        notes.append("simplification introduced a self-intersection that wasn't in the input -- discarding the simplified version and keeping the cleaned-up original for this contour")
+        out_pts, out_meta = (pts, meta)
         fell_back = True
+    report = SimplifyReport(contour_id=contour.contour_id, input_points=n_in, output_points=len(out_pts), dropped_near_duplicates=dropped, had_self_intersections_before=intersects_before, had_self_intersections_after=intersects_after, fell_back_to_original=fell_back, notes=notes)
+    return (Contour(out_pts, contour.closed, contour.is_hole, contour.contour_id, out_meta), report)
 
-    report = SimplifyReport(
-        contour_id=contour.contour_id,
-        input_points=n_in,
-        output_points=len(out_pts),
-        dropped_near_duplicates=dropped,
-        had_self_intersections_before=intersects_before,
-        had_self_intersections_after=intersects_after,
-        fell_back_to_original=fell_back,
-        notes=notes,
-    )
-    return Contour(out_pts, contour.closed, contour.is_hole, contour.contour_id, out_meta), report
-
-
-# 4b. Tag-aware simplification (straight segments -> collapse to 2 points,
-#     curve/corner segments -> left essentially untouched so G2/G3 fitting
-#     downstream still has the real point cloud to work with)
 def _split_into_runs(tags: List[Any]) -> List[Tuple[int, int, Any]]:
-    """Return (start_idx, end_idx_inclusive, tag) for each run of consecutive
-    equal tags."""
     runs: List[Tuple[int, int, Any]] = []
     n = len(tags)
     if n == 0:
@@ -315,729 +232,241 @@ def _split_into_runs(tags: List[Any]) -> List[Tuple[int, int, Any]]:
     runs.append((start, n - 1, tags[start]))
     return runs
 
-
-def _rotate_to_run_boundary(
-    points: List[Point], tags: List[Any]
-) -> Tuple[List[Point], List[Any]]:
-    """Rotate a closed ring so index 0 sits exactly on a tag change. This
-    avoids a run wrapping around the array seam and being split in two by
-    mistake. If every point has the same tag, returns the input unchanged."""
+def _rotate_to_run_boundary(points: List[Point], tags: List[Any]) -> Tuple[List[Point], List[Any]]:
     n = len(tags)
     if n < 2:
-        return points, tags
+        return (points, tags)
     start = None
     for i in range(n):
-        if tags[i] != tags[i - 1]:  # tags[-1] wraps to the last element, as intended
+        if tags[i] != tags[i - 1]:
             start = i
             break
     if start is None or start == 0:
-        return points, tags
-    return points[start:] + points[:start], tags[start:] + tags[:start]
+        return (points, tags)
+    return (points[start:] + points[:start], tags[start:] + tags[:start])
 
-
-def merge_straight_runs(
-    points,
-    runs,
-    max_bridge_points=4,
-    line_tol=0.07,
-):
-    """
-    Merge:
-
-        Straight
-        tiny Curve
-        Straight
-
-    when the whole combined section is geometrically close
-    to one straight line.
-
-    This is intentionally conservative:
-    - only tiny curve bridges are merged
-    - the whole merged section must stay close to one line
-    - curves larger than max_bridge_points remain untouched
-    """
-
+def merge_straight_runs(points, runs, max_bridge_points=4, line_tol=0.07):
     import numpy as np
-
     merged = []
     i = 0
-
     while i < len(runs):
-
         if i + 2 < len(runs):
-
             s1, e1, t1 = runs[i]
             s2, e2, t2 = runs[i + 1]
             s3, e3, t3 = runs[i + 2]
-
-            if (
-                t1 == "straight"
-                and t2 == "curve"
-                and t3 == "straight"
-                and (e2 - s2 + 1) <= max_bridge_points
-            ):
-
+            if t1 == 'straight' and t2 == 'curve' and (t3 == 'straight') and (e2 - s2 + 1 <= max_bridge_points):
                 p0 = np.array(points[s1], dtype=float)
                 p1 = np.array(points[e3], dtype=float)
-
                 d = p1 - p0
                 L = np.linalg.norm(d)
-
-                if L > 1e-9:
-
+                if L > 1e-09:
                     d /= L
                     ok = True
-
                     for k in range(s1, e3 + 1):
-
                         p = np.array(points[k], dtype=float)
-
                         proj = p0 + np.dot(p - p0, d) * d
                         err = np.linalg.norm(p - proj)
-
                         if err > line_tol:
                             ok = False
                             break
-
                     if ok:
-
-                        merged.append(
-                            (s1, e3, "straight")
-                        )
-
+                        merged.append((s1, e3, 'straight'))
                         i += 3
                         continue
-
         merged.append(runs[i])
         i += 1
-
     return merged
 
-
 def _curve_turning_score(points: List[Point]) -> float:
-    """
-    Estimate how much a curve changes direction.
-
-    0.0 -> almost straight / very simple
-    1.0 -> highly changing / complex
-    """
-
     if len(points) < 4:
         return 0.0
-
     total_turn = 0.0
     valid_turns = 0
-
     for i in range(1, len(points) - 1):
-
         p0 = points[i - 1]
         p1 = points[i]
         p2 = points[i + 1]
-
-        v1 = (
-            p1[0] - p0[0],
-            p1[1] - p0[1]
-        )
-
-        v2 = (
-            p2[0] - p1[0],
-            p2[1] - p1[1]
-        )
-
+        v1 = (p1[0] - p0[0], p1[1] - p0[1])
+        v2 = (p2[0] - p1[0], p2[1] - p1[1])
         n1 = math.hypot(*v1)
         n2 = math.hypot(*v2)
-
-        if n1 < 1e-9 or n2 < 1e-9:
+        if n1 < 1e-09 or n2 < 1e-09:
             continue
-
-        dot = (
-            v1[0] * v2[0]
-            + v1[1] * v2[1]
-        ) / (n1 * n2)
-
+        dot = (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)
         dot = max(-1.0, min(1.0, dot))
-
-        angle = math.degrees(
-            math.acos(dot)
-        )
-
+        angle = math.degrees(math.acos(dot))
         total_turn += abs(angle)
         valid_turns += 1
-
     if valid_turns == 0:
         return 0.0
-
     avg_turn = total_turn / valid_turns
+    return max(0.0, min(1.0, avg_turn / 12.0))
 
-    # Normalize.
-    return max(
-        0.0,
-        min(
-            1.0,
-            avg_turn / 12.0
-        )
-    )
-
-def _curve_simplification_candidates(
-    points: List[Point],
-    base_epsilon: float
-):
-    """
-    Generate adaptive simplification levels for CURVE runs.
-
-    Simple curves:
-        Keep the aggressive behavior that gives the new version
-        its excellent simplification.
-
-    Medium curves:
-        Use a balanced level.
-
-    Complex curves:
-        Keep the stronger old-version behavior, but slightly
-        reduce the most aggressive candidates to avoid excessive
-        flattening of detailed ornamentation.
-    """
-
+def _curve_simplification_candidates(points: List[Point], base_epsilon: float):
     complexity = _curve_turning_score(points)
-
-    # ------------------------------------------------------------
-    # SIMPLE CURVES
-    #
-    # KEEP THIS AS-IS.
-    # This is responsible for the excellent simplification of
-    # simple ornaments.
-    # ------------------------------------------------------------
-
     if complexity < 0.25:
-
-        multipliers = [
-            16.0,
-            12.0,
-            9.0,
-            6.0,
-            4.0,
-            2.5,
-            1.5,
-            1.0,
-        ]
-
-    # ------------------------------------------------------------
-    # MEDIUM CURVES
-    # ------------------------------------------------------------
-
+        multipliers = [16.0, 12.0, 9.0, 6.0, 4.0, 2.5, 1.5, 1.0]
     elif complexity < 0.55:
-
-        multipliers = [
-            8.0,
-            6.0,
-            4.0,
-            2.5,
-            1.5,
-            1.0,
-        ]
-
-    # ------------------------------------------------------------
-    # COMPLEX CURVES
-    #
-    # Slightly more conservative than the current version.
-    #
-    # We DO NOT go back to the old weak behavior.
-    # We only remove the most aggressive 12x/10x candidates.
-    # ------------------------------------------------------------
-
+        multipliers = [8.0, 6.0, 4.0, 2.5, 1.5, 1.0]
     else:
+        multipliers = [12.0, 10.0, 8.0, 6.0, 4.0, 3.0, 2.0, 1.5, 1.0]
+    return ([base_epsilon * m for m in multipliers], complexity)
 
-        multipliers = [
-            12.0,
-            10.0,
-            8.0,
-            6.0,
-            4.0,
-            3.0,
-            2.0,
-            1.5,
-            1.0,
-        ]
-
-    return [
-        base_epsilon * m
-        for m in multipliers
-    ], complexity
-
-
-def _curve_shape_error(
-    original: List[Point],
-    simplified: List[Point]
-) -> float:
-    """
-    Measure how much the simplified polyline deviates from the
-    original curve.
-
-    Uses point-to-nearest-segment distance.
-
-    Returns normalized error.
-    """
-
+def _curve_shape_error(original: List[Point], simplified: List[Point]) -> float:
     if len(original) < 3 or len(simplified) < 2:
-        return float("inf")
+        return float('inf')
 
     def point_segment_distance(p, a, b):
-
         ax, ay = a
         bx, by = b
         px, py = p
-
         dx = bx - ax
         dy = by - ay
-
         denom = dx * dx + dy * dy
-
         if denom < 1e-12:
-            return math.hypot(
-                px - ax,
-                py - ay
-            )
-
-        t = (
-            (px - ax) * dx
-            + (py - ay) * dy
-        ) / denom
-
-        t = max(
-            0.0,
-            min(1.0, t)
-        )
-
+            return math.hypot(px - ax, py - ay)
+        t = ((px - ax) * dx + (py - ay) * dy) / denom
+        t = max(0.0, min(1.0, t))
         qx = ax + t * dx
         qy = ay + t * dy
-
-        return math.hypot(
-            px - qx,
-            py - qy
-        )
-
+        return math.hypot(px - qx, py - qy)
     max_error = 0.0
-
     for p in original:
-
-        best = float("inf")
-
+        best = float('inf')
         for i in range(len(simplified) - 1):
-
-            d = point_segment_distance(
-                p,
-                simplified[i],
-                simplified[i + 1]
-            )
-
+            d = point_segment_distance(p, simplified[i], simplified[i + 1])
             if d < best:
                 best = d
-
-        max_error = max(
-            max_error,
-            best
-        )
-
-    # Normalize by curve size.
+        max_error = max(max_error, best)
     xs = [p[0] for p in original]
     ys = [p[1] for p in original]
-
-    diagonal = math.hypot(
-        max(xs) - min(xs),
-        max(ys) - min(ys)
-    )
-
-    if diagonal < 1e-9:
+    diagonal = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+    if diagonal < 1e-09:
         return max_error
-
     return max_error / diagonal
 
-def _simplify_curve_adaptive(
-    points: List[Point],
-    base_epsilon: float,
-):
-    """
-    Adaptive simplification for CURVE runs.
-
-    The simplifier tries the strongest candidate first and gradually
-    becomes more conservative until the original curve shape is preserved.
-
-    Simple curves are allowed stronger simplification.
-    Complex curves are also allowed strong simplification, but only when
-    the resulting shape remains within the allowed error.
-    """
-
-    candidates, complexity = (
-        _curve_simplification_candidates(
-            points,
-            base_epsilon
-        )
-    )
-
+def _simplify_curve_adaptive(points: List[Point], base_epsilon: float):
+    candidates, complexity = _curve_simplification_candidates(points, base_epsilon)
     curve_length = 0.0
-
     for i in range(1, len(points)):
         dx = points[i][0] - points[i - 1][0]
         dy = points[i][1] - points[i - 1][1]
         curve_length += math.hypot(dx, dy)
-
-    # --------------------------------------------------------
-    # Adaptive error based on curve size.
-    #
-    # Long, smooth ornament curves:
-    #     allow slightly more simplification.
-    #
-    # Short/detail-heavy curves:
-    #     remain more conservative to preserve ornament details.
-    # --------------------------------------------------------
-
     if curve_length >= 20.0:
-
         allowed_error = 0.024
-
     elif curve_length >= 10.0:
-
         allowed_error = 0.022
-
     elif curve_length >= 5.0:
-
         allowed_error = 0.019
-
     else:
-
         allowed_error = 0.016
-
     best = list(points)
     best_eps = base_epsilon
-
     original_count = len(points)
-
     for eps in candidates:
-
         try:
-
-            candidate = DPHull(
-                points,
-                eps
-            ).run()
-
+            candidate = DPHull(points, eps).run()
         except Exception:
-
             continue
-
-        # Never accept a pathological collapse.
         if len(candidate) < 4:
             continue
-
-        # --------------------------------------------------------
-        # Measure how far the candidate moved away from the
-        # original curve.
-        # --------------------------------------------------------
-
-        error = _curve_shape_error(
-            points,
-            candidate
-        )
-
-        # --------------------------------------------------------
-        # Accept the FIRST valid candidate.
-        #
-        # Because candidates are ordered from strongest to weakest,
-        # this gives us the maximum safe simplification.
-        # --------------------------------------------------------
-
+        error = _curve_shape_error(points, candidate)
         if error <= allowed_error:
-
             best = candidate
             best_eps = eps
-
             break
-
-    print(
-        "[adaptive-curve] "
-        f"{original_count}->{len(best)} "
-        f"complexity={complexity:.3f} "
-        f"allowed_error={allowed_error:.3f} "
-        f"epsilon={best_eps:.4f}"
-    )
-
     return best
 
-
-
-def simplify_points_by_tags(
-    points: List[Point],
-    tags: List[Any],
-    curve_epsilon_px: float = 1e-6,
-) -> Tuple[List[Point], List[Any]]:
-    """
-    Tag-aware simplification.
-
-    STRAIGHT:
-        collapsed directly to first + last point.
-
-    CURVE:
-        simplified with a controlled adaptive epsilon:
-        - short curves stay conservative
-        - medium curves get a small increase
-        - very long curves get a slightly larger increase
-
-    CORNER:
-        preserved.
-
-    The adaptive range is intentionally narrow so that increasing
-    simplification on complex ornaments does not flatten/distort
-    curved geometry too aggressively.
-    """
-
+def simplify_points_by_tags(points: List[Point], tags: List[Any], curve_epsilon_px: float=1e-06) -> Tuple[List[Point], List[Any]]:
     import math
-
     n = len(points)
-
     if n < 3:
-        return list(points), list(tags)
-
+        return (list(points), list(tags))
     runs = _split_into_runs(tags)
-
-    # ------------------------------------------------------------
-    # Merge:
-    # Straight -> tiny Curve -> Straight
-    # only when all three parts are geometrically one line.
-    # ------------------------------------------------------------
-
     runs = merge_straight_runs(points, runs)
 
-    print(f"Runs: {runs}")
-
-    # ------------------------------------------------------------
-    # Adaptive curve epsilon
-    #
-    # Current curves are mostly simplified with epsilon ~= 0.10 mm.
-    # We keep short curves at that level and allow only long curves
-    # to become slightly more aggressive.
-    #
-    # This targets the complex ornaments without touching straight
-    # simplification.
-    # ------------------------------------------------------------
-
     def get_curve_epsilon(run_length: int) -> float:
-
-        # Very short curve:
-        # more aggressive to clean remaining light wiggles.
         if run_length < 80:
-            return curve_epsilon_px * 1.80
-
-        # Short/medium curve (typical simple ornaments):
-        # stronger push to reach ~96%.
+            return curve_epsilon_px * 1.8
         if run_length < 250:
-            factor = 2.10
-
-        # Medium curve:
-        # noticeably more aggression.
+            factor = 2.1
         elif run_length < 600:
-            factor = 1.70
-
-        # Long curve:
-        # keep close to previous behaviour so complex ornaments
-        # stay around the excellent 91% result.
+            factor = 1.7
         elif run_length < 1200:
             factor = 1.22
-
-        # Very long curve:
-        # almost unchanged.
         else:
-            factor = 1.30
-
+            factor = 1.3
         return curve_epsilon_px * factor
-
-    # ------------------------------------------------------------
-
     out_pts: List[Point] = []
     out_tags: List[Any] = []
-
     for start, end, tag in runs:
-
         run_pts = points[start:end + 1]
-
         if len(run_pts) <= 2:
-
             seg_out = run_pts
-
-        elif tag == "straight":
-
-            # Straight = exactly TWO points.
-            seg_out = [
-                run_pts[0],
-                run_pts[-1],
-            ]
-
-        elif tag == "corner":
-
-            # Corners are intentionally preserved.
+        elif tag == 'straight':
+            seg_out = [run_pts[0], run_pts[-1]]
+        elif tag == 'corner':
             seg_out = run_pts
-
         else:
-
-            # ----------------------------------------------------
-            # CURVE
-            # ----------------------------------------------------
-
             epsilon = get_curve_epsilon(len(run_pts))
-
-            seg_out = DPHull(
-                run_pts,
-                epsilon,
-            ).run()
-
-            print(
-                f"[adaptive-curve] "
-                f"run={start}-{end} "
-                f"points={len(run_pts)}->{len(seg_out)} "
-                f"epsilon={epsilon:.4f}"
-            )
-
-        # Avoid duplicating the boundary point between runs.
-        if out_pts and seg_out and out_pts[-1] == seg_out[0]:
+            seg_out = DPHull(run_pts, epsilon).run()
+        if out_pts and seg_out and (out_pts[-1] == seg_out[0]):
             seg_out = seg_out[1:]
-
         out_pts.extend(seg_out)
+        out_tags.extend([tag] * len(seg_out))
+    return (out_pts, out_tags)
 
-        out_tags.extend(
-            [tag] * len(seg_out)
-        )
-
-    # ------------------------------------------------------------
-    # Debug information for straight runs
-    # ------------------------------------------------------------
-
-    for start, end, tag in runs:
-
-        if tag == "straight":
-
-            print(
-                f"Straight run: {start}-{end}, "
-                f"length={end-start+1}"
-            )
-
-    return out_pts, out_tags
-
-
-def simplify_contour_by_tags(
-    contour: Contour,
-    curve_epsilon_mm: float,
-    pixels_per_mm: float = 1.0,
-    min_segment_mm: float = 0.02,
-    validate: bool = True,
-) -> Tuple[Contour, SimplifyReport]:
-    """Same contract as simplify_contour(), but uses per-point tags
-    (contour.metadata, e.g. from classify_points_straight_curve_corner) to
-    drive simplification instead of a single global epsilon:
-      - "straight" runs -> forced down to their 2 endpoints
-      - everything else -> left alone (near-zero epsilon cleanup only)
-    Falls back to plain simplify_contour() if tags are missing/mismatched.
-    """
+def simplify_contour_by_tags(contour: Contour, curve_epsilon_mm: float, pixels_per_mm: float=1.0, min_segment_mm: float=0.02, validate: bool=True) -> Tuple[Contour, SimplifyReport]:
     notes: List[str] = []
     n_in = len(contour.points)
-
     if contour.metadata is None or len(contour.metadata) != n_in:
-        notes.append("no per-point tags on this contour; falling back to plain DPHull")
-        return simplify_contour(
-            contour, epsilon_mm=curve_epsilon_mm, pixels_per_mm=pixels_per_mm,
-            min_segment_mm=min_segment_mm, validate=validate,
-        )
-
+        notes.append('no per-point tags on this contour; falling back to plain DPHull')
+        return simplify_contour(contour, epsilon_mm=curve_epsilon_mm, pixels_per_mm=pixels_per_mm, min_segment_mm=min_segment_mm, validate=validate)
     curve_epsilon_px = curve_epsilon_mm * pixels_per_mm
     min_seg_px = min_segment_mm * pixels_per_mm
-
-    pts, meta, dropped = dedupe_points(
-        contour.points, contour.closed, min_seg_px, contour.metadata
-    )
+    pts, meta, dropped = dedupe_points(contour.points, contour.closed, min_seg_px, contour.metadata)
     if dropped:
-        notes.append(f"dropped {dropped} near-duplicate point(s) (< {min_segment_mm} mm apart)")
-
+        notes.append(f'dropped {dropped} near-duplicate point(s) (< {min_segment_mm} mm apart)')
     if len(pts) < (3 if contour.closed else 2):
-        notes.append("too few points after cleanup; returning as-is")
-        report = SimplifyReport(contour.contour_id, n_in, len(pts), dropped,
-                                 False, False, True, notes)
-        return Contour(pts, contour.closed, contour.is_hole, contour.contour_id, meta), report
-
+        notes.append('too few points after cleanup; returning as-is')
+        report = SimplifyReport(contour.contour_id, n_in, len(pts), dropped, False, False, True, notes)
+        return (Contour(pts, contour.closed, contour.is_hole, contour.contour_id, meta), report)
     intersects_before = has_self_intersections(pts, contour.closed) if validate else False
     if intersects_before:
-        notes.append(
-            "input contour is self-intersecting (likely a Path-Offsetting "
-            "artifact at a sharp corner) -- simplifying anyway, but flag "
-            "this contour for review; consider fixing the offset join type"
-        )
-
+        notes.append('input contour is self-intersecting (likely a Path-Offsetting artifact at a sharp corner) -- simplifying anyway, but flag this contour for review; consider fixing the offset join type')
     if contour.closed:
         pts_r, tags_r = _rotate_to_run_boundary(pts, meta)
     else:
-        pts_r, tags_r = pts, meta
-
+        pts_r, tags_r = (pts, meta)
     try:
         out_pts, out_tags = simplify_points_by_tags(pts_r, tags_r, curve_epsilon_px)
     except Exception as exc:
-        notes.append(f"tag-aware simplification failed ({exc!r}); falling back to cleaned-up original")
-        report = SimplifyReport(contour.contour_id, n_in, len(pts), dropped,
-                                 intersects_before, intersects_before, True, notes)
-        return Contour(pts, contour.closed, contour.is_hole, contour.contour_id, meta), report
-
+        notes.append(f'tag-aware simplification failed ({exc!r}); falling back to cleaned-up original')
+        report = SimplifyReport(contour.contour_id, n_in, len(pts), dropped, intersects_before, intersects_before, True, notes)
+        return (Contour(pts, contour.closed, contour.is_hole, contour.contour_id, meta), report)
     intersects_after = has_self_intersections(out_pts, contour.closed) if validate else False
     fell_back = False
-    if intersects_after and not intersects_before:
-        notes.append(
-            "tag-aware simplification introduced a self-intersection that "
-            "wasn't in the input -- discarding it and keeping the "
-            "cleaned-up original for this contour"
-        )
-        out_pts, out_tags = pts, meta
+    if intersects_after and (not intersects_before):
+        notes.append("tag-aware simplification introduced a self-intersection that wasn't in the input -- discarding it and keeping the cleaned-up original for this contour")
+        out_pts, out_tags = (pts, meta)
         fell_back = True
+    report = SimplifyReport(contour_id=contour.contour_id, input_points=n_in, output_points=len(out_pts), dropped_near_duplicates=dropped, had_self_intersections_before=intersects_before, had_self_intersections_after=intersects_after, fell_back_to_original=fell_back, notes=notes)
+    return (Contour(out_pts, contour.closed, contour.is_hole, contour.contour_id, out_tags), report)
 
-    report = SimplifyReport(
-        contour_id=contour.contour_id,
-        input_points=n_in,
-        output_points=len(out_pts),
-        dropped_near_duplicates=dropped,
-        had_self_intersections_before=intersects_before,
-        had_self_intersections_after=intersects_after,
-        fell_back_to_original=fell_back,
-        notes=notes,
-    )
-    return Contour(out_pts, contour.closed, contour.is_hole, contour.contour_id, out_tags), report
-
-
-def simplify_pipeline_by_tags(
-    contours: Sequence[Contour],
-    curve_epsilon_mm: float,
-    pixels_per_mm: float = 1.0,
-    min_segment_mm: float = 0.02,
-    validate: bool = True,
-) -> Tuple[List[Contour], List[SimplifyReport]]:
+def simplify_pipeline_by_tags(contours: Sequence[Contour], curve_epsilon_mm: float, pixels_per_mm: float=1.0, min_segment_mm: float=0.02, validate: bool=True) -> Tuple[List[Contour], List[SimplifyReport]]:
     out_contours: List[Contour] = []
     reports: List[SimplifyReport] = []
     for c in contours:
-        simplified, report = simplify_contour_by_tags(
-            c, curve_epsilon_mm, pixels_per_mm, min_segment_mm, validate
-        )
+        simplified, report = simplify_contour_by_tags(c, curve_epsilon_mm, pixels_per_mm, min_segment_mm, validate)
         out_contours.append(simplified)
         reports.append(report)
-    return out_contours, reports
+    return (out_contours, reports)
 
-
-# 5. Batch driver over every contour in an engraving
-def simplify_pipeline(
-    contours: Sequence[Contour],
-    epsilon_mm: float,
-    pixels_per_mm: float = 1.0,
-    min_segment_mm: float = 0.02,
-    validate: bool = True,
-) -> Tuple[List[Contour], List[SimplifyReport]]:
+def simplify_pipeline(contours: Sequence[Contour], epsilon_mm: float, pixels_per_mm: float=1.0, min_segment_mm: float=0.02, validate: bool=True) -> Tuple[List[Contour], List[SimplifyReport]]:
     out_contours: List[Contour] = []
     reports: List[SimplifyReport] = []
     for c in contours:
-        simplified, report = simplify_contour(
-            c, epsilon_mm, pixels_per_mm, min_segment_mm, validate
-        )
+        simplified, report = simplify_contour(c, epsilon_mm, pixels_per_mm, min_segment_mm, validate)
         out_contours.append(simplified)
         reports.append(report)
-    return out_contours, reports
+    return (out_contours, reports)
